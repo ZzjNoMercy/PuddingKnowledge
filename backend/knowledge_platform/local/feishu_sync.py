@@ -128,6 +128,8 @@ class FeishuSyncService:
                 if callable(source):
                     source = await source(credential_ref, binding_config)
                 entries=await source.discover(selection)
+                if selection.kind=='bitable':
+                    return await self._sync_bitable(source,entries,run_id,owner,connector_id,space_id,fingerprint,selection_fingerprint,binding_config,mode)
                 stats['discovered']=len(entries)
                 with Session(self.engine) as session, session.begin():
                     self._fence(session,run_id,owner,connector_id,space_id,fingerprint)
@@ -220,3 +222,58 @@ class FeishuSyncService:
                 except Exception:
                     pass
                 raise
+
+
+    async def _sync_bitable(self, source, entries, run_id, owner, connector_id, space_id, fingerprint, selection_fingerprint, binding_config, mode):
+        from knowledge_platform.connector_sync.bitable_schema import validate_relations
+        schemas={}; objects={}; total=0
+        for entry in entries:
+            schema=await source.schema(entry)
+            payload=_json(schema.document).encode()
+            total+=len(payload)
+            if total>32*1024*1024:raise FeishuSyncError('Bitable schemas exceed the combined size bound')
+            table_id=schema.document['table_id']
+            schemas[table_id]=schema
+            objects[table_id]=self.objects.put(payload)
+        relations=validate_relations(binding_config['bitable'].get('relations',[]),schemas)
+        stats={'discovered':len(entries),'changed':0,'schema_changed':0,'unchanged':0,'linked':len(entries),'unsupported':0,'deleted':0}
+        with Session(self.engine) as session,session.begin():
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            connector=self._fence(session,run_id,owner,connector_id,space_id,fingerprint)
+            seen=set()
+            for entry in entries:
+                table_id=entry.external_id.rsplit(':',1)[-1];schema=schemas[table_id]
+                identity='feishu_item_'+_hash(connector_id+'\0'+entry.external_id)[:48]
+                seen.add(entry.external_id)
+                item=session.get(KnowledgeSourceItem,identity)
+                if item is None:
+                    item=KnowledgeSourceItem(id=identity,space_id=space_id,connector_id=connector_id,external_id=entry.external_id,external_type=entry.kind)
+                    session.add(item)
+                elif (item.space_id,item.connector_id,item.external_id)!=(space_id,connector_id,entry.external_id):
+                    raise FeishuSyncError('Bitable source identity collision')
+                stats['unchanged' if item.revision==schema.revision and item.status=='linked' else 'schema_changed']+=1
+                digest=objects[table_id]
+                asset_id='feishu_schema_'+_hash(identity+'\0'+schema.revision)[:48]
+                uri=f'knowledge://spaces/{space_id}/assets/{asset_id}'
+                asset=session.get(KnowledgeAsset,asset_id)
+                if asset is None:
+                    session.add(KnowledgeAsset(id=asset_id,space_id=space_id,kind='table_schema',title=entry.title,
+                        mime_type='application/json',source_type='feishu',source_uri=uri,revision=schema.revision,
+                        content_digest=digest,metadata_json={'source_item_id':identity,'storage_mode':'live','row_storage':False}))
+                elif (asset.space_id,asset.content_digest,asset.source_uri,asset.kind)!=(space_id,digest,uri,'table_schema'):
+                    raise FeishuSyncError('Bitable schema Asset collision')
+                item.asset_id=asset_id;item.revision=schema.revision;item.content_digest=digest
+                item.status='linked';item.external_type='bitable_table';item.title=entry.title
+                item.path_json=list(entry.path);item.last_seen_sync_run_id=run_id;item.updated_at=utcnow()
+                item.metadata_json={**schema.document,'selection_fingerprint':selection_fingerprint,'storage_mode':'live','row_storage':False,
+                    'relations':[r for r in relations['relations'] if table_id in {r['source_table_id'],r['target_table_id']}]}
+            if mode=='full':
+                for item in session.scalars(select(KnowledgeSourceItem).where(KnowledgeSourceItem.connector_id==connector_id)):
+                    if item.space_id!=space_id:raise FeishuSyncError('Bitable source Space mismatch')
+                    if item.external_id not in seen and item.status!='deleted':item.status='deleted';item.updated_at=utcnow();stats['deleted']+=1
+            run=session.get(KnowledgeSyncRun,run_id)
+            run.status='succeeded';run.current_step='completed';run.progress=100;run.stats_json=stats
+            run.cursor_json={**run.cursor_json,'discovery_complete':True,'deletion_reconciled':mode=='full'}
+            run.finished_at=utcnow();run.updated_at=utcnow();run.lease_owner=None
+            connector.last_sync_run_id=run_id;connector.last_synced_at=utcnow();connector.updated_at=utcnow()
+        return {'run_id':run_id,'status':'succeeded',**stats}

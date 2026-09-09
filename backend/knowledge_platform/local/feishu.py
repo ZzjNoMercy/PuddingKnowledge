@@ -31,7 +31,7 @@ def load_feishu_config(path: Path):
         raise ValueError('Invalid Feishu sources')
     seen=set()
     for item in raw['sources']:
-        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint','auth_type','oauth_redirect_uris','oauth_scopes'}:
+        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint','auth_type','oauth_redirect_uris','oauth_scopes','bitable'}:
             raise ValueError('Invalid Feishu source fields')
         if not isinstance(item['id'],str) or not _ID.fullmatch(item['id']) or item['id'] in seen:
             raise ValueError('Invalid Feishu source identity')
@@ -54,7 +54,12 @@ def load_feishu_config(path: Path):
                 raise ValueError('User OAuth needs explicit scopes including offline_access')
         elif set(item)&{'oauth_redirect_uris','oauth_scopes'}:
             raise ValueError('Tenant source cannot configure user OAuth')
-        FeishuSelection(**item['selection'])
+        selection=FeishuSelection(**item['selection'])
+        if selection.kind=='bitable':
+            from knowledge_platform.local.bitable import normalize_policy
+            normalize_policy(item.get('bitable',{'tables':[],'relations':[]}))
+        elif 'bitable' in item:
+            raise ValueError('Bitable policy belongs only to a Bitable source')
         # Validates the operator-selected origin without issuing any request.
         FeishuApiClient('validation-only',endpoint=item.get('endpoint'))
     return raw
@@ -110,21 +115,28 @@ class LocalFeishuService:
                 if auth_type=='user':
                     connector.config_json={**previous_config,**connector.config_json,'auth_type':'user','connector_id':item['id'],
                         'oauth_principal':'knowledge-local','oauth_redirect_uris':item['oauth_redirect_uris'],'oauth_scopes':item['oauth_scopes']}
+                if selection['kind']=='bitable':
+                    from knowledge_platform.local.bitable import normalize_policy
+                    connector.config_json={**connector.config_json,'bitable':normalize_policy(previous_config.get('bitable',item.get('bitable',{'tables':[],'relations':[]}))),
+                        'bitable_policy_generation':previous_config.get('bitable_policy_generation',0)}
                 connector.updated_at=utcnow()
         from knowledge_platform.local.feishu_oauth import LocalFeishuOAuth
         self.oauth=LocalFeishuOAuth(self.engine,self.vault,state_root)
+        from knowledge_platform.local.bitable import LocalBitableService
+        self.bitable=LocalBitableService(self)
 
     async def _bound_source(self, reference, binding):
         from knowledge_platform.connector_sync.feishu_auth import TenantTokenBroker, FeishuAppConfig, ReauthenticatingFeishuApi
         endpoint=binding.get('endpoint')
+        tables={x['table_id']:x['view_id'] for x in binding.get('bitable',{}).get('tables',[])} if binding.get('selection',{}).get('kind')=='bitable' else None
         if binding.get('auth_type')=='user':
             from knowledge_platform.local.feishu_oauth import UserAuthorizedFeishuApi
-            return FeishuSource(UserAuthorizedFeishuApi(self.oauth,reference,binding,space_id=SPACE))
+            return FeishuSource(UserAuthorizedFeishuApi(self.oauth,reference,binding,space_id=SPACE),bitable_tables=tables)
         key=(reference,endpoint)
         if key not in self.brokers:
             self.brokers[key]=TenantTokenBroker(self.vault,endpoint=endpoint)
         app=FeishuAppConfig(app_id=binding['app_id'],app_secret_ref=reference,endpoint=endpoint or 'https://open.feishu.cn')
-        return FeishuSource(ReauthenticatingFeishuApi(self.brokers[key],app,lambda token:FeishuApiClient(token,endpoint=endpoint)))
+        return FeishuSource(ReauthenticatingFeishuApi(self.brokers[key],app,lambda token:FeishuApiClient(token,endpoint=endpoint)),bitable_tables=tables)
 
     async def sync(self, connector_id, *, idempotency_key, mode='incremental'):
         if connector_id not in self.config: raise FeishuSyncError('Feishu source is not configured')
@@ -151,12 +163,16 @@ class LocalFeishuService:
         if asset is None or asset.source_type!='feishu' or asset.space_id!=SPACE:
             raise LookupError('Feishu Asset is unavailable')
         item=session.get(KnowledgeSourceItem,asset.metadata_json.get('source_item_id'))
-        if item is None or item.space_id!=SPACE or item.status!='ready' or item.connector_id not in self.config:
+        if item is None or item.space_id!=SPACE or item.status not in {'ready','linked'} or item.connector_id not in self.config:
             raise LookupError('Feishu source is not readable')
         connector=session.get(KnowledgeConnector,item.connector_id)
         if connector is None or connector.status not in {'ready','active'}:
             raise LookupError('Feishu source is disabled')
-        expected = item.asset_id if asset.kind=='document' else item.metadata_json.get('raw_asset_id') if asset.kind=='raw_snapshot' else None
+        if asset.kind=='table_schema':
+            self.bitable._snapshot(item.connector_id,item.metadata_json.get('table_id'))
+        elif item.status!='ready':
+            raise LookupError('Feishu source is not a document')
+        expected = item.asset_id if asset.kind in {'document','table_schema'} else item.metadata_json.get('raw_asset_id') if asset.kind=='raw_snapshot' else None
         if expected!=asset.id:
             raise LookupError('Feishu Asset is not the current source binding')
         selection=asdict(FeishuSelection(**connector.config_json['selection']))

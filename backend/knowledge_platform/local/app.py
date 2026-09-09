@@ -129,6 +129,8 @@ def _build_app(
     if feishu is not None:
         from knowledge_platform.transport.fastapi_feishu_router import create_feishu_router
         app.include_router(create_feishu_router(feishu, principal_provider=lambda: principal))
+        from knowledge_platform.transport.fastapi_bitable_router import create_bitable_router
+        app.include_router(create_bitable_router(feishu.bitable, principal_provider=lambda: principal))
     return app
 
 

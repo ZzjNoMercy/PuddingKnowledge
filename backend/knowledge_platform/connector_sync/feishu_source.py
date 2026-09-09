@@ -65,10 +65,11 @@ class FeishuDocument:
 
 
 class FeishuSource:
-    def __init__(self, api, *, max_entries: int = 10000, max_depth: int = 64):
+    def __init__(self, api, *, max_entries: int = 10000, max_depth: int = 64, bitable_tables=None):
         if not 1 <= max_entries <= 10000 or not 1 <= max_depth <= 64:
             raise FeishuSourceError('Discovery bounds are invalid')
         self.api = api
+        self.bitable_tables = bitable_tables
         self.max_entries = max_entries
         self.max_depth = max_depth
 
@@ -85,6 +86,11 @@ class FeishuSource:
                 seen.add(identity)
                 name = str(table.get('name') or identity)[:500]
                 entries.append(FeishuEntry(f'bitable:{selection.root}:{identity}', None, selection.root, 'bitable_table', name, (name,)))
+            if self.bitable_tables is not None:
+                requested=set(self.bitable_tables)
+                if requested-seen:
+                    raise FeishuSourceError('Configured Bitable table is no longer visible')
+                entries=[entry for entry in entries if entry.external_id.rsplit(':',1)[-1] in requested]
             return tuple(entries)
         result = []; seen = set(); folders = set(); queue = deque()
         if selection.kind == 'wiki' and selection.root:
@@ -141,3 +147,13 @@ class FeishuSource:
         raw = json.dumps({'document':metadata, 'blocks':blocks}, ensure_ascii=False, sort_keys=True).encode()
         return FeishuDocument(str(revision), str(metadata.get('title') or entry.title)[:500], raw,
                               converted.markdown.encode(), tuple(converted.warnings), tuple(converted.assets))
+
+    async def schema(self, entry: FeishuEntry):
+        from .bitable_schema import normalize_schema
+        if entry.kind!='bitable_table' or self.bitable_tables is None:
+            raise FeishuSourceError('Bitable schema requires explicitly configured tables')
+        table_id=entry.external_id.rsplit(':',1)[-1]
+        if table_id not in self.bitable_tables:
+            raise FeishuSourceError('Bitable table is outside the configured scope')
+        fields=await self.api.list_bitable_fields(app_token=entry.object_token,table_id=table_id)
+        return normalize_schema(entry.object_token,table_id,entry.title,self.bitable_tables[table_id],fields)

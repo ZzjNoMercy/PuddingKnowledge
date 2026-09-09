@@ -278,7 +278,11 @@ class FeishuApiClient:
     async def list_bitable_records_page(self, *, app_token: str, table_id: str, view_id: str = "",
                                         page_size: int = 50, page_token: str = "",
                                         field_names: list[str] | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {"page_size": max(1, min(int(page_size), 100))}
+        if type(page_size) is not int or not 1 <= page_size <= 100:
+            raise FeishuApiError("Invalid Bitable page size")
+        if not isinstance(page_token, str) or len(page_token) > 2000:
+            raise FeishuApiError("Invalid Bitable page token")
+        params: dict[str, Any] = {"page_size": page_size}
         if view_id:
             params["view_id"] = view_id
         if page_token:
@@ -291,7 +295,12 @@ class FeishuApiClient:
         has_more = data.get("has_more")
         if not isinstance(items, list) or not all(isinstance(item, dict) for item in items) or not isinstance(has_more, bool):
             raise FeishuApiError("飞书 OpenAPI 记录分页格式不正确。")
-        return {"items": items, "has_more": has_more, "page_token": str(data.get("page_token") or ""),
+        next_token = data.get("page_token", "")
+        if next_token is None:
+            next_token = ""
+        if len(items) > page_size or not isinstance(next_token, str) or len(next_token) > 2000 or (has_more and (not next_token or next_token == page_token)):
+            raise FeishuApiError("Invalid Bitable continuation")
+        return {"items": items, "has_more": has_more, "page_token": next_token,
                 "total": data.get("total")}
 
     async def get_doc_meta(self, *, doc_token: str, doc_type: str = "docx") -> dict[str, Any]:

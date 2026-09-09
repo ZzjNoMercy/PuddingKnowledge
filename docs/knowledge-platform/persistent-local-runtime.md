@@ -236,3 +236,81 @@ Tests include real provider HTTP requests and independently started runtime
 processes, including SIGKILL during callback and refresh. Production Feishu
 consent, production browser authentication, remote revocation and release/upgrade
 acceptance remain separate, uncompleted gates.
+
+## Registered Bitable schemas and live pages
+
+The local REST runtime now owns Bitable schema sync and bounded live queries.
+Configure a Feishu source with `selection.kind: "bitable"`, `selection.root`
+equal to the Base app token, and an explicit initial scope:
+
+```json
+"bitable": {
+  "tables": [{"table_id": "tblExample", "view_id": "vewExample"}],
+  "relations": []
+}
+```
+
+An omitted or empty table list denies all tables. A blank `view_id` explicitly
+selects the whole approved table. The config file seeds the policy only on first
+registration; subsequent policy updates belong to the owned Catalog and survive
+restart. Editing the initial file does not silently re-expand a narrowed scope.
+
+The existing `POST /v1/sources/SOURCE_ID:sync` reads table and field metadata,
+never records. It publishes immutable `table_schema` Assets and linked source
+items. Numeric provider field types and exact field names are preserved; field
+order alone does not change the schema revision. Full successful sync reconciles
+removed scope items. Missing approved tables fail the scan and cannot authorize
+remote-deletion inference. Policy removal or view changes immediately invalidate
+old linked items, even before the next sync.
+
+The REST operations return the standard QueryResult envelope:
+
+- `GET /v1/bitable/sources`: registered readable Bitable sources and table scope.
+- `GET /v1/sources/SOURCE_ID/bitable/policy`: current scope, declared relations,
+  and `policy_revision` (Admin + Space).
+- `PUT /v1/sources/SOURCE_ID/bitable/policy`: exactly `policy` and
+  `expected_revision`. Policy contains `tables` and `relations`; validation uses
+  remote visible tables and a serialized final revision check. Concurrent writers
+  with the same old revision cannot both succeed. Newly declared relation endpoints
+  require already synchronized fields, so first configure tables, sync, then add
+  relations. Existing relations whose fields disappear remain visible as stale.
+- `POST /v1/sources/SOURCE_ID/bitable/resolve`: exactly `url`; accepts official
+  tenant HTTPS Base/Wiki links belonging to this registered app. It returns only
+  table metadata, never rows (Admin + Space).
+- `GET /v1/sources/SOURCE_ID/bitable/tables/TABLE_ID/schema`: live schema,
+  revision, current schema Asset URI and `sync_required` (Query + Space).
+- `GET /v1/sources/SOURCE_ID/bitable/relations`: schema-only validation of
+  explicitly declared relations. It never proves row uniqueness or performs joins.
+- `POST /v1/sources/SOURCE_ID/bitable/query`: exactly `table_id`,
+  `schema_revision`, `field_names`, `page_size` and `cursor` (Query + Space).
+  Use the synchronized revision, exact field names, page size 1–100 and an empty
+  cursor for the first page. Empty field names select all visible schema fields
+  up to 100. View scope is server-owned and cannot be overridden in the request.
+
+A relation has `id`, `source_table_id`, `source_field_id`, `target_table_id`,
+`target_field_id`, and `cardinality` (`one_to_one`, `one_to_many`, `many_to_one`,
+`many_to_many`), with optional `name` and `description`. Reverse duplicates and
+self-endpoints are rejected. `schema_valid` is structural validation, not proof
+of the declared row cardinality.
+
+Live query reads one provider record page, projects returned fields and checks
+current schema before and after the record request. Schema drift requires resync;
+local scope/authorization changes discard in-flight results. This observation
+cannot provide a provider-side transactional snapshot or guarantee stable rows
+across pages. QueryResult evidence references the immutable **schema**, not an
+archived copy of live records. Identical schema content may reuse its Asset across
+credential rotations; current credentials authorize each live observation.
+
+The encrypted 15-minute cursor is bound to principal, source, app policy, table,
+view, schema, fields and page size. It cannot be used to request an arbitrary app.
+User OAuth sources additionally require the server-established caller identity to
+match the source's authorization principal. The current runtime remains single-user
+`knowledge-local`; production session authentication is a separate gate.
+
+Rows are returned to the caller with `Cache-Control: no-store` and are not written
+to Catalog, Vault or object storage. This does not control the caller's own storage.
+Tests compare all local fixture file bytes before/after a query and check a row
+canary across independent process restart. No row cache or full-table download is
+implemented. Dedicated Console flows, external MCP exposure, separate preview and
+relation CRUD compatibility endpoints, media and production acceptance remain
+unfinished; this checkpoint does not declare complete Feishu parity.

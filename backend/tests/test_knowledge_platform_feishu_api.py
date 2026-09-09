@@ -166,3 +166,17 @@ async def test_many_individually_bounded_pages_have_a_total_memory_bound():
     with pytest.raises(FeishuApiError,match='累计响应'):
         await client.list_spaces()
     assert len(transport.calls)==5
+
+
+@pytest.mark.asyncio
+async def test_bitable_record_page_validates_raw_continuation():
+    for page in (
+        {"items":[],"has_more":True,"page_token":{"opaque":"x"}},
+        {"items":[],"has_more":False,"page_token":[]},
+        {"items":[],"has_more":True,"page_token":""},
+        {"items":[],"has_more":True,"page_token":"repeat"},
+        {"items":[{},{}],"has_more":False},
+    ):
+        client=FeishuApiClient("token",transport=FakeTransport([response({"code":0,"data":page})]))
+        with pytest.raises(FeishuApiError):
+            await client.list_bitable_records_page(app_token="app",table_id="tbl",page_size=1,page_token="repeat")
