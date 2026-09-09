@@ -127,3 +127,57 @@ WeChat formatting and image links. Image binary caching, reading-status edits,
 delete/purge and full Feishu discovery/auth/incremental sync remain outstanding.
 The independent Feishu block converter is available as a pure conversion layer;
 it does not by itself establish a working Feishu connection or sync runtime.
+
+## Feishu application authentication and Docx sync
+
+The independent runtime accepts `--feishu-config /absolute/feishu.json` together
+with `--state-dir`. The same option is forwarded by the Deploy CLI and supervisor.
+This configuration explicitly opts the local runtime into the source Admin APIs:
+
+```json
+{
+  "version": 1,
+  "sources": [{
+    "id": "feishu_docs",
+    "name": "Team Wiki",
+    "selection": {"kind": "wiki", "root": "", "wiki_space": "REMOTE_SPACE_ID"},
+    "app_id": "cli_APPLICATION_ID",
+    "app_secret_env": "KNOWLEDGE_FEISHU_APP_SECRET"
+  }]
+}
+```
+
+On first startup the named environment variable must contain the application
+secret. The runtime imports it into its encrypted, owner-scoped Vault; Catalog
+contains only a credential reference. Subsequent startup can resolve that
+reference without the environment variable. Configuration never contains the
+plaintext app secret. The default endpoint is `https://open.feishu.cn`; an
+explicit loopback HTTP `endpoint` exists for local protocol fixtures only.
+No automatic discovery or sync occurs at startup.
+
+- `POST /v1/sources/feishu_docs:discover` lists the selected remote entries.
+- `POST /v1/sources/feishu_docs:sync` with
+  `{"idempotency_key":"sync-001","mode":"incremental"}` fetches current Docx
+  revisions and publishes immutable raw JSON plus normalized Markdown Assets.
+- Use `"mode":"full"` for complete-scan deletion reconciliation. An incremental
+  run never deletes entries just because they are absent from that scan.
+- The existing Catalog list/read endpoints expose the resulting SourceItems and
+  document Assets. The Wiki source provider accepts their explicit revisions.
+
+Both source operations require Admin and explicit Space scope. A sync claim
+owns a stable credential/configuration snapshot; each Catalog write verifies
+ownership and unchanged configuration. A complete successful replay avoids
+remote access. Failure and cancellation preserve a retryable job record, while
+OS locks release on process exit. Full-scan failure cannot authorize deletion.
+Changing an existing source selection requires an explicit migration, rather
+than interpreting a smaller selection as remote deletion. Raw and normalized
+objects are written before their Catalog references and bound to the owned
+object-store identity.
+
+This is the application-authenticated Docx runtime checkpoint, not complete
+Feishu feature parity. Remaining work includes user OAuth/refresh grants, Lark
+endpoint support, media/attachment downloads and parser routing, Drive binary
+files, complete Bitable schema/relation/live-row APIs, per-item failure isolation,
+resumable pagination checkpoints, indexing and Console flows. Bitable entries
+currently remain live links; no row values are copied into Catalog. Production
+account acceptance, upgrades, rollback and continuity gates are still pending.

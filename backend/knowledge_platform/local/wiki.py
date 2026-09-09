@@ -524,7 +524,7 @@ class _BoundWikiCompilationWorker(WikiCompilationWorker):
 
 
 def build_wiki_services(
-    config: Mapping[str, Any], catalog_path: Path, state_root: Path, *, captured_sources=None
+    config: Mapping[str, Any], catalog_path: Path, state_root: Path, *, captured_sources=None, feishu_sources=None
 ) -> WikiServices:
     """Build the durable Wiki worker and dynamic publication reader."""
 
@@ -543,6 +543,9 @@ def build_wiki_services(
     store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id="space_kb_default")
     jobs = _WorkerJobAdapter(store)
     snapshots = _ConfiguredRawSnapshotRepository(assets=assets, space_id="space_kb_default", catalog_path=catalog_path)
+    if feishu_sources is not None:
+        from knowledge_platform.local.feishu import FeishuAndConfiguredSnapshots
+        snapshots = FeishuAndConfiguredSnapshots(feishu_sources, snapshots)
     if captured_sources is not None:
         from knowledge_platform.local.read_later import CaptureAndConfiguredSnapshots
         snapshots = CaptureAndConfiguredSnapshots(captured_sources, snapshots)

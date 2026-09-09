@@ -27,3 +27,8 @@ an explicit HTTP model endpoint and approved source bindings. See
 The persistent runtime also accepts `--capture-config` for public URL ingestion,
 owned Raw Snapshots, retry and Wiki promotion. Source URLs stay in its encrypted
 Vault. See the same persistent runtime guide for API and policy details.
+
+Feishu application-authenticated Docx discovery and persistent sync can be enabled
+with `--feishu-config` and `--state-dir`. Configuration, Vault ownership, Admin
+commands, and remaining parity gaps are documented in
+[the persistent local runtime guide](docs/knowledge-platform/persistent-local-runtime.md).

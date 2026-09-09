@@ -133,3 +133,7 @@ not been run.
 2026-09-10 URL Capture / Read Later：独立服务现支持 URL 抓取、列表、失败重试、资产读取和 Wiki promotion。抓取进程有 60 秒总期限与解压后 5 MiB 边界；公共地址策略逐跳校验并固定 DNS 结果，测试私有 origin 仅由本地配置授权。原始内容和规范化 Markdown 先写入不可变对象存储，再以所有权条件更新持久任务和 Catalog；加密 URL、双重文件锁、对象目录 FD 和存储身份绑定覆盖重试及目录替换边界。迁入纯 Feishu blocks 转换器，尚不代表完整 Feishu Sync。
 
 验证：最终相关回归 56 passed；兼容回归 28 passed；Deploy CLI 39 passed；仓库外已安装包真实 Capture 进程 1 passed。完整发行包 stage/deploy/install/start/capture/read/stop/restart/replay 通过，原 Catalog 不变，重放没有第二次抓取。运行包 manifest 为 sha256:2ff4a8f7fccd941b294079a2963e895e31b54819edc493d09c6171dcfdcecc6c。对抗式审查问题已修复并加入反例测试；远程 CI 未执行。剩余包括图片二进制缓存、阅读状态与删除、完整 Feishu 授权/发现/增量同步、Semantic 模型处理、import/export/index、升级回滚和生产连续性验收；整体拆分目标仍未完成。
+
+2026-09-10 Feishu 独立 Docx 同步阶段：新增真实 OpenAPI provider、应用 tenant token broker（Vault 引用、缓存、认证失败单次刷新）、受限 Wiki/Drive/Bitable discovery、Docx 固定版本原始快照和 Markdown Asset 发布。独立服务增加 feishu-config 和 Admin source discover/sync；监督器与 Deploy CLI 透传配置，读取和 Wiki source provider 接入当前有效 Feishu 资产。先认领再创建绑定来源，逐次写入校验 owner/config fingerprint；全量成功后才允许 tombstone，增量缺失不删除，selection 改动要求显式迁移。同键成功重放无需远端请求。分页 malformed/循环/重定向/单页及累计体积超限均失败关闭。
+
+验证：相关运行时与竞态回归 56 passed；额外分页累计边界与真实 HTTP 测试通过；发行边界/旧 Connector 兼容 17 passed，Deploy CLI 39 passed。仓库外锁定非 editable 安装包真实进程通过应用凭据兑换、同步、读取、无环境密钥重启、增量快路径；原 Catalog 未改变。Luna 对抗审查发现的 credential/claim 竞态、旧 Asset 指针读取、selection 漂移、异常分页误判空集合均已修复并覆盖反例。远程 CI 未执行。本阶段仍不等于完整 Feishu：用户 OAuth、Lark、媒体/PDF/Drive 解析、完整 Bitable schema/关系/live row、逐项失败隔离、断点分页、索引和 Console 仍待接入，Semantic、import/export/index 及升级回滚/生产连续性也仍是整体目标缺口。

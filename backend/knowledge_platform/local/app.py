@@ -55,6 +55,7 @@ def _build_app(
     wiki_provider: Any | None = None,
     wiki_blob_reader: Any | None = None,
     read_later: Any | None = None,
+    feishu: Any | None = None,
 ):
     catalog = CatalogQueryService(repository)
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
@@ -63,6 +64,9 @@ def _build_app(
         provider = _CombinedWikiProvider(provider, wiki_provider)
     if wiki_blob_reader is not None:
         reader = _CombinedBlobReader(reader, wiki_blob_reader, frozenset(bindings))
+    if feishu is not None:
+        from knowledge_platform.local.feishu import FeishuBlobReader
+        reader = FeishuBlobReader(repository, feishu, reader)
     if read_later is not None:
         from knowledge_platform.local.read_later import CaptureBlobReader
         reader = CaptureBlobReader(repository, read_later, reader)
@@ -122,6 +126,9 @@ def _build_app(
     if read_later is not None:
         from knowledge_platform.transport.fastapi_capture_router import create_capture_router
         app.include_router(create_capture_router(read_later, principal_provider=lambda: principal, wiki_compilation=wiki_compilation))
+    if feishu is not None:
+        from knowledge_platform.transport.fastapi_feishu_router import create_feishu_router
+        app.include_router(create_feishu_router(feishu, principal_provider=lambda: principal))
     return app
 
 
