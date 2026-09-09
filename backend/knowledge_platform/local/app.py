@@ -51,10 +51,18 @@ def _build_app(
     structured_processing: Any | None = None,
     processing_bindings: Any | None = None,
     processing_worker: Any | None = None,
+    wiki_compilation: Any | None = None,
+    wiki_provider: Any | None = None,
+    wiki_blob_reader: Any | None = None,
 ):
     catalog = CatalogQueryService(repository)
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
-    asset_read = AssetReadService(catalog=repository, reader=LocalFilesystemBlobReader(bindings))
+    reader = LocalFilesystemBlobReader(bindings)
+    if wiki_provider is not None:
+        provider = _CombinedWikiProvider(provider, wiki_provider)
+    if wiki_blob_reader is not None:
+        reader = _CombinedBlobReader(reader, wiki_blob_reader, frozenset(bindings))
+    asset_read = AssetReadService(catalog=repository, reader=reader)
     derivative_bindings = {
         str(asset.get("id")): ("normalized_markdown",)
         for asset in repository.list_assets()
@@ -83,8 +91,9 @@ def _build_app(
     )
     jobs = RestJobAdapter(jobs=CatalogJobQueryService(repository))
     admin = None
-    if any(item is not None for item in (semantic_markdown, connector_catalog, asset_upload, package_import, index_rebuild, connector_authorization, notifications, asset_binding_review_queue, structured_authoring, structured_processing)):
+    if any(item is not None for item in (semantic_markdown, connector_catalog, asset_upload, package_import, index_rebuild, connector_authorization, notifications, asset_binding_review_queue, structured_authoring, structured_processing, wiki_compilation)):
         admin = RestAdminAdapter(
+            wiki_compilation=wiki_compilation,
             authoring=structured_authoring,
             processing=structured_processing,
             bindings=processing_bindings or StaticProcessingBindingResolver({}),
@@ -106,3 +115,27 @@ def _build_app(
         principal_provider=lambda: principal,
         correlation_provider=lambda: Correlation("phase8-local-platform-http-shadow"),
     )
+
+
+class _CombinedWikiProvider:
+    def __init__(self, initial, published):
+        self.initial, self.published = initial, published
+
+    async def search(self, *, query, space_id, limit):
+        current = tuple(await self.published.search(query=query, space_id=space_id, limit=limit))
+        if len(current) >= limit:
+            return current[:limit]
+        initial = await self.initial.search(query=query, space_id=space_id, limit=limit)
+        seen = {item.asset_id for item in current}
+        return (current + tuple(item for item in initial if item.asset_id not in seen))[:limit]
+
+
+class _CombinedBlobReader:
+    def __init__(self, initial, published, initial_ids):
+        self.initial, self.published, self.initial_ids = initial, published, initial_ids
+
+    async def read(self, request):
+        # Initial bindings are immutable and explicitly approved at bootstrap.
+        asset_id = request.resource_uri.rsplit('/', 1)[-1]
+        reader = self.initial if asset_id in self.initial_ids else self.published
+        return await reader.read(request)

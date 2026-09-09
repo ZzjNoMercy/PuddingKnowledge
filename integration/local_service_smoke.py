@@ -32,6 +32,7 @@ with sqlite3.connect(root / 'catalog.sqlite3') as conn:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--persistent', action='store_true')
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--fixture-python', type=Path, required=True)
     args = parser.parse_args()
@@ -67,6 +68,9 @@ def main() -> None:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
         start = ('start', '--catalog', str(root / 'catalog.sqlite3'), '--wiki-root', str(root / 'wiki'), '--port', str(port), '--apply')
+        state = home / 'catalog' / 'state'
+        if args.persistent:
+            start += ('--state-dir', str(state))
         try:
             assert call(*start)['status'] == 'running'
             call(*start, fail=True)
@@ -77,7 +81,15 @@ def main() -> None:
                 assert json.load(response)['status'] == 'ok'
             assert call('stop', '--apply')['status'] == 'stopped'
             assert call('status')['status'] != 'running'
+            if args.persistent:
+                import sqlite3
+                with sqlite3.connect(state / 'catalog.sqlite3') as db:
+                    db.execute("UPDATE knowledge_spaces SET name='Persistent restart marker' WHERE id='space_kb_default'")
             assert call(*start)['status'] == 'running'
+            if args.persistent:
+                with urlopen(f'http://127.0.0.1:{port}/v1/spaces', timeout=3) as response:
+                    assert 'Persistent restart marker' in response.read().decode()
+
         finally:
             # Stop even when startup returned malformed evidence after spawning.
             call('stop', '--apply')
@@ -90,7 +102,7 @@ def main() -> None:
                           'supervisor_sha256': supervisor_sha,
                           'owned_bundle_survives_source_removal': True, 'locked_installed_runtime': True,
                           'real_start_health_stop_restart': True, 'duplicate_start_rejected': True,
-                          'source_catalog_unchanged': True, 'production_activation_allowed': False}))
+                          'persistent_catalog_restart': args.persistent, 'source_catalog_unchanged': True, 'production_activation_allowed': False}))
 
 
 if __name__ == '__main__':

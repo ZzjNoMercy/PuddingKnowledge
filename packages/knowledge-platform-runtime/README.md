@@ -110,7 +110,7 @@ against the configured source allowlist, so new datasets can be queried without
 restarting the service. Durable jobs support idempotent replay after rebuilding
 the service. No source CSV/TSV file is modified.
 
-The CLI still creates a private Catalog snapshot for each run. Authoring changes
+Without `--state-dir`, the CLI creates a private Catalog snapshot for each run. Authoring changes
 live in `<temp-dir>/knowledge-platform.sqlite3`; retain that file and explicitly
 use it as the input Catalog when carrying state into another CLI run. Reusing the
 original input Catalog starts from the original state. This is not yet the full
@@ -135,6 +135,8 @@ The extracted repository uses backend/pyproject.toml and backend/uv.lock as its 
 The staging command also writes a Deploy CLI-compatible `manifest.json` covering
 every staged source and dependency file. Use the Deploy CLI's explicit
 `deploy --apply`, `install --apply`, and `start --apply` sequence to install this
-local runtime without a checkout on PYTHONPATH. This remains the local snapshot
-runtime; complete persistent Processing/Authoring and production activation are
-separate acceptance requirements.
+local runtime without a checkout on PYTHONPATH. Pass `--state-dir` to preserve the owned Catalog across restarts and
+`--wiki-config` to enable HTTP-model Wiki compilation. See
+[the persistent runtime guide](../../docs/knowledge-platform/persistent-local-runtime.md).
+Complete Processing/Authoring and production activation remain separate
+acceptance requirements.

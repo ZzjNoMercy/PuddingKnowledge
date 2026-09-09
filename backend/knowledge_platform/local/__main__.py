@@ -10,7 +10,7 @@ import json
 import re
 import signal
 import socket
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,6 +21,7 @@ from knowledge_platform.catalog import SqliteCatalogQueryRepository
 from knowledge_platform.catalog.local_asset_binding_review_queue import LocalAssetBindingReviewQueue
 from knowledge_platform.local.app import _build_app
 from knowledge_platform.local.catalog import _materialize_catalog
+from knowledge_platform.local.workspace import open_persistent_workspace
 
 
 class LocalServer(uvicorn.Server):
@@ -54,15 +55,21 @@ def _output_path(path: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("catalog", "wiki-root", "temp-dir", "ready-file"):
+    parser.add_argument("--catalog", type=Path)
+    parser.add_argument("--wiki-root", type=Path)
+    for name in ("temp-dir", "ready-file"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--console-origin")
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
     parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
+    if args.state_dir is None and (args.catalog is None or args.wiki_root is None):
+        parser.error("--catalog and --wiki-root are required without --state-dir")
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")
     if args.instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", args.instance_id):
@@ -88,17 +95,32 @@ def main() -> int:
             structured_config = load_structured_config(args.structured_config)
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local structured configuration\n")
-    workspace = _output_path(args.temp_dir)
+    wiki_config = None
+    if args.wiki_config:
+        if args.state_dir is None:
+            parser.error("wiki-config requires an explicit persistent state-dir")
+        from knowledge_platform.local.wiki import load_wiki_config
+        try:
+            wiki_config = load_wiki_config(args.wiki_config)
+        except (ValueError, OSError, TypeError):
+            parser.exit(2, "Invalid local Wiki configuration\n")
     ready = _output_path(args.ready_file)
-    # Reserve the listener before staging or claiming readiness.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    persistent = (open_persistent_workspace(args.state_dir, catalog=args.catalog, wiki_root=args.wiki_root)
+                  if args.state_dir is not None else nullcontext(None))
+    # Hold the persistent workspace lock for the entire server lifetime.
+    with persistent as owned, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         # Permit restart after closed connections enter TIME_WAIT; an active
         # listener still prevents this process from claiming the same port.
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", args.port))
-        workspace.mkdir(mode=0o700)
-        catalog = workspace / "knowledge-platform.sqlite3"
-        materialized = _materialize_catalog(args.catalog, catalog, args.wiki_root)
+        if owned is None:
+            workspace = _output_path(args.temp_dir)
+            workspace.mkdir(mode=0o700)
+            catalog = workspace / "knowledge-platform.sqlite3"
+            materialized = _materialize_catalog(args.catalog, catalog, args.wiki_root)
+        else:
+            catalog = owned["catalog"]
+            materialized = owned
         database_services = {}
         database_scopes = ()
         if database_config:
@@ -117,17 +139,30 @@ def main() -> int:
             except Exception:
                 parser.exit(2, "Local structured binding failed; check approved Assets and source digests\n")
             structured_scopes = STRUCTURED_SCOPES
+        wiki_services = {}
+        if wiki_config:
+            from knowledge_platform.local.wiki import build_wiki_services
+            from knowledge_platform.local.wiki_query import PublishedWikiReader
+            try:
+                services = build_wiki_services(wiki_config, catalog, args.state_dir / "processing")
+                published = PublishedWikiReader(SqliteCatalogQueryRepository(catalog), services)
+                wiki_services = {"wiki_compilation": services.wiki_compilation,
+                                 "wiki_provider": published, "wiki_blob_reader": published}
+            except (ValueError, OSError, TypeError):
+                parser.exit(2, "Local Wiki configuration or owned state is invalid\n")
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
             *database_scopes,
             *structured_scopes,
+            *(("knowledge.processing",) if wiki_config else ()),
             *(("knowledge.admin",) if args.asset_binding_review_queue else ()),
         ))
         app = _build_app(
             SqliteCatalogQueryRepository(catalog), materialized["file_bindings"], principal,
             **database_services,
             **structured_services,
+            **wiki_services,
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )
@@ -146,7 +181,8 @@ def main() -> int:
         with ready.open("x", encoding="utf-8") as stream:
             json.dump({"status": "ready", "pages": materialized["pages"],
                        "activation_allowed": False, "database_configured": bool(database_config),
-                       "structured_configured": bool(structured_config)}, stream)
+                       "structured_configured": bool(structured_config),
+                       "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
         try:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])
         finally:

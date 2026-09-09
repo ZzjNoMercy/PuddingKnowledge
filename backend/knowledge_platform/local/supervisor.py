@@ -225,6 +225,8 @@ def _child_command(
     lifeline_fd: int,
     database_config: Path | None,
     structured_config: Path | None,
+    state_dir: Path | None = None,
+    wiki_config: Path | None = None,
 ) -> list[str]:
     runtime = [
         sys.executable,
@@ -247,6 +249,9 @@ def _child_command(
         runtime.extend(("--database-config", str(database_config)))
     if structured_config is not None:
         runtime.extend(("--structured-config", str(structured_config)))
+    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config)):
+        if value is not None:
+            runtime.extend(("--" + name, str(value)))
     return [
         sys.executable,
         "-m",
@@ -392,6 +397,8 @@ def _manager_main(args: argparse.Namespace) -> int:
                     run_dir=run_dir, lifeline_fd=lifeline_read,
                     database_config=Path(args.database_config) if args.database_config else None,
                     structured_config=Path(args.structured_config) if args.structured_config else None,
+                    state_dir=Path(args.state_dir) if args.state_dir else None,
+                    wiki_config=Path(args.wiki_config) if args.wiki_config else None,
                 ),
                 cwd=home,
                 stdin=subprocess.DEVNULL,
@@ -548,6 +555,10 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if args.database_config:
             command.extend(("--database-config", str(Path(args.database_config))))
+        for name in ("state_dir", "wiki_config"):
+            value = getattr(args, name, None)
+            if value is not None:
+                command.extend(("--" + name.replace("_", "-"), str(value)))
         if args.structured_config:
             command.extend(("--structured-config", str(Path(args.structured_config))))
         with (run_dir / "manager.log").open("ab") as log:
@@ -604,6 +615,8 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--port", type=int, required=True)
             sub.add_argument("--database-config", type=Path)
             sub.add_argument("--structured-config", type=Path)
+            sub.add_argument("--state-dir", type=Path)
+            sub.add_argument("--wiki-config", type=Path)
     manager = subparsers.add_parser("_manager")
     for name in ("home", "catalog", "wiki-root", "run-dir"):
         manager.add_argument("--" + name, required=True)
@@ -611,6 +624,8 @@ def _parser() -> argparse.ArgumentParser:
     manager.add_argument("--lock-fd", required=True)
     manager.add_argument("--database-config")
     manager.add_argument("--structured-config")
+    manager.add_argument("--state-dir")
+    manager.add_argument("--wiki-config")
     return parser
 
 

@@ -127,3 +127,5 @@ source bundle, with original Catalog preserved and no legacy Home writes.
 Production activation and the Processing/Authoring composition gaps above remain
 unaccepted. CI now contains the executable lifecycle smoke; remote CI itself has
 not been run.
+
+2026-09-10 独立持久 Wiki Processing：新增可选 state-dir，首次复制 Catalog/Wiki，后续复用 owned Catalog；接入显式 HTTP model 的 WikiCompilationWorker 与即时 Asset read/Wiki query。请求指纹、发布正文、receipt 与输出 Catalog Asset 事务提交；同键换输入拒绝，取消/进程退出释放 flock 后可重试。真实 HTTP 模型 fixture + 两次独立服务进程验证仅生成一次，仓库外已安装包同样通过；Deploy CLI stage/deploy/install/start/stop/restart 验证持久 Catalog 修改保留。该切片不能替代尚未接入的 Capture/Connector Sync/Semantic、完整 import/export/index 和状态升级回滚验收。
