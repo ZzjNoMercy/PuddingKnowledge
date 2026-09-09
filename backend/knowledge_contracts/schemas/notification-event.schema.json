@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://puddingclaw.local/schemas/notification-event.schema.json",
+  "title": "Knowledge Platform NotificationEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "subject_type", "subject_id", "title", "body", "payload", "occurred_at"],
+  "properties": {
+    "event_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"},
+    "event_type": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$"},
+    "subject_type": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$"},
+    "subject_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"},
+    "title": {"type": "string", "maxLength": 300, "not": {"pattern": "(?i)(?:https?://|file:|path\\s*[:=]|token\\s*[:=])"}},
+    "body": {"type": "string", "maxLength": 4000, "not": {"pattern": "(?i)(?:https?://|file:|path\\s*[:=]|token\\s*[:=])"}},
+    "occurred_at": {"type": "string", "minLength": 1},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"},
+        "dimension_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"},
+        "status": {"enum": ["queued", "running", "waiting_for_publish_confirmation", "waiting_for_baseline_change_confirmation", "published", "failed", "cancelled"]},
+        "session_id_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "query_id_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

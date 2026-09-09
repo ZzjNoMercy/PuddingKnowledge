@@ -1,0 +1,17 @@
+{
+  "name": "@puddingai/knowledge-platform-console-contracts",
+  "version": "0.1.0-local",
+  "private": true,
+  "description": "Dependency-free REST client and public query contracts for the Knowledge Platform Console",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "files": ["src", "README.md", "LICENSE"]
+}

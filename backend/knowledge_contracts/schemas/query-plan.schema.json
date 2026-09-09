@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://puddingknowledge.dev/contracts/query-plan/v1",
+  "title": "Knowledge Database Query Plan",
+  "type": "object",
+  "required": ["query_plan_id", "sql", "dialect", "dataset_id", "dataset_version", "deployment_revision", "semantic_context_hash", "validation", "expires_at"],
+  "properties": {
+    "query_plan_id": {"type": "string"},
+    "sql": {"type": "string"},
+    "dialect": {"type": "string"},
+    "dataset_id": {"type": "string"},
+    "dataset_version": {"type": "string"},
+    "deployment_revision": {"type": "string"},
+    "semantic_context_hash": {"type": "string"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "evidence": {"type": "array"},
+    "validation": {
+      "type": "object",
+      "required": ["readonly", "allowed_tables", "guardrails_passed"],
+      "properties": {
+        "readonly": {"const": true},
+        "allowed_tables": {"const": true},
+        "guardrails_passed": {"const": true}
+      }
+    }
+  }
+}

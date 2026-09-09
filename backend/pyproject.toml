@@ -185,6 +185,8 @@ only-include = [
     "skills",
     "tools",
     "utils",
+    "knowledge_contracts",
+    "knowledge_platform",
     "vanna",
     "web_search",
 ]

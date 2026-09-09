@@ -1,0 +1,9 @@
+{
+  "name": "@puddingai/knowledge-platform-skills",
+  "version": "0.1.0-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

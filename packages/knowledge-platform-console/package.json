@@ -1,0 +1,14 @@
+{
+  "name": "@puddingai/knowledge-platform-console",
+  "version": "0.1.0-local",
+  "private": true,
+  "description": "Independent, dependency-free Knowledge Platform Console shell",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/console.test.mjs",
+    "test:database": "node --test test/database-http-smoke.test.mjs",
+    "test:database:vanna": "node --test test/vanna-database-http-smoke.test.mjs"
+  },
+  "files": ["dist", "README.md", "LICENSE"]
+}

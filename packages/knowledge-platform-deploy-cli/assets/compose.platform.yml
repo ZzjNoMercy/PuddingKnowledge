@@ -1,0 +1,110 @@
+name: puddingknowledge
+
+# Platform-owned infrastructure template. This file is a release asset, not
+# a command to run during the staged migration. Every secret is supplied by
+# the operator; there are no development credentials in the template.
+services:
+  postgres:
+    profiles: ["postgres"]
+    image: ${PUDDINGKNOWLEDGE_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    container_name: puddingknowledge-postgres
+    environment:
+      POSTGRES_DB: ${PUDDINGKNOWLEDGE_POSTGRES_DB:-puddingknowledge}
+      POSTGRES_USER: ${PUDDINGKNOWLEDGE_POSTGRES_USER:?set PUDDINGKNOWLEDGE_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${PUDDINGKNOWLEDGE_POSTGRES_PASSWORD:?set PUDDINGKNOWLEDGE_POSTGRES_PASSWORD}
+    ports:
+      - "${PUDDINGKNOWLEDGE_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}/infrastructure/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  milvus-etcd:
+    image: ${PUDDINGKNOWLEDGE_ETCD_IMAGE:-quay.io/coreos/etcd:v3.5.18}
+    container_name: puddingknowledge-milvus-etcd
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}/infrastructure/milvus/etcd
+        target: /etcd
+    command: ["etcd", "--advertise-client-urls=http://milvus-etcd:2379", "--listen-client-urls=http://0.0.0.0:2379", "--data-dir=/etcd"]
+
+  milvus-minio:
+    image: ${PUDDINGKNOWLEDGE_MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
+    container_name: puddingknowledge-milvus-minio
+    environment:
+      MINIO_ROOT_USER: ${PUDDINGKNOWLEDGE_MINIO_ROOT_USER:?set PUDDINGKNOWLEDGE_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${PUDDINGKNOWLEDGE_MINIO_ROOT_PASSWORD:?set PUDDINGKNOWLEDGE_MINIO_ROOT_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}/infrastructure/milvus/minio
+        target: /minio_data
+    command: ["minio", "server", "/minio_data", "--console-address", ":9001"]
+
+  milvus:
+    image: ${PUDDINGKNOWLEDGE_MILVUS_IMAGE:-milvusdb/milvus:v2.5.4}
+    container_name: puddingknowledge-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt: ["seccomp:unconfined"]
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}/infrastructure/milvus/data
+        target: /var/lib/milvus
+    ports:
+      - "${PUDDINGKNOWLEDGE_MILVUS_PORT:-19530}:19530"
+      - "${PUDDINGKNOWLEDGE_MILVUS_HTTP_PORT:-19091}:9091"
+    depends_on:
+      milvus-etcd:
+        condition: service_started
+      milvus-minio:
+        condition: service_started
+
+  api:
+    image: ${PUDDINGKNOWLEDGE_API_IMAGE:?set PUDDINGKNOWLEDGE_API_IMAGE}
+    container_name: puddingknowledge-api
+    environment:
+      PUDDINGKNOWLEDGE_HOME: /var/lib/puddingknowledge
+      PUDDINGKNOWLEDGE_CATALOG_URL: ${PUDDINGKNOWLEDGE_CATALOG_URL:-sqlite:////var/lib/puddingknowledge/catalog/knowledge-platform.sqlite3}
+      PUDDINGKNOWLEDGE_MILVUS_URI: http://milvus:19530
+    ports:
+      - "${PUDDINGKNOWLEDGE_API_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}
+        target: /var/lib/puddingknowledge
+    depends_on:
+      milvus:
+        condition: service_started
+
+  worker:
+    image: ${PUDDINGKNOWLEDGE_WORKER_IMAGE:?set PUDDINGKNOWLEDGE_WORKER_IMAGE}
+    container_name: puddingknowledge-worker
+    environment:
+      PUDDINGKNOWLEDGE_HOME: /var/lib/puddingknowledge
+      PUDDINGKNOWLEDGE_API_URL: http://api:8080
+    volumes:
+      - type: bind
+        source: ${PUDDINGKNOWLEDGE_HOME:?set PUDDINGKNOWLEDGE_HOME}
+        target: /var/lib/puddingknowledge
+    depends_on:
+      api:
+        condition: service_started
+
+  console:
+    image: ${PUDDINGKNOWLEDGE_CONSOLE_IMAGE:?set PUDDINGKNOWLEDGE_CONSOLE_IMAGE}
+    container_name: puddingknowledge-console
+    environment:
+      PLATFORM_API_ORIGIN: http://api:8080
+    ports:
+      - "${PUDDINGKNOWLEDGE_CONSOLE_PORT:-8787}:8080"
+    depends_on:
+      api:
+        condition: service_started
+

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Knowledge Platform Console</title>
+    <style>
+      :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; background: #f6f8fb; color: #172033; }
+      body { margin: 0; }
+      main { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
+      header { margin-bottom: 24px; }
+      h1 { margin: 0 0 8px; font-size: 28px; }
+      p { color: #5d687a; }
+      section { background: #fff; border: 1px solid #dfe5ee; border-radius: 12px; padding: 18px; margin-top: 16px; box-shadow: 0 4px 18px #1b2b4a0d; }
+      label { display: block; font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+      input, textarea, button { box-sizing: border-box; font: inherit; }
+      input, textarea { width: 100%; border: 1px solid #cbd4e1; border-radius: 8px; padding: 9px 10px; }
+      textarea { min-height: 96px; resize: vertical; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .actions { display: flex; gap: 10px; margin-top: 14px; }
+      button { border: 0; border-radius: 8px; padding: 9px 14px; color: white; background: #2456d6; cursor: pointer; }
+      button.secondary { background: #617087; }
+      button:disabled { opacity: .55; cursor: wait; }
+      #status { min-height: 20px; color: #536175; }
+      #status.error { color: #b42318; }
+      .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+      .chip { background: #edf2ff; border-radius: 999px; padding: 5px 9px; font-size: 13px; }
+      .asset-list { display: grid; gap: 8px; margin-top: 12px; }
+      .asset-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: baseline; border-top: 1px solid #e7ebf1; padding-top: 8px; font-size: 12px; }
+      .asset-row code { color: #334f96; overflow-wrap: anywhere; }
+      .asset-row span { color: #7a8799; }
+      .asset-read { padding: 4px 8px; font-size: 11px; background: #617087; }
+      .evidence { border-top: 1px solid #e7ebf1; margin-top: 14px; padding-top: 12px; }
+      .evidence code { color: #334f96; word-break: break-all; }
+      pre { background: #f5f7fa; border-radius: 8px; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+      @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Knowledge Platform Console</h1>
+        <p>通过 Platform 公共 REST 契约发现知识并查询；结果中的 Evidence 使用 portable knowledge:// URI。</p>
+      </header>
+      <section>
+        <div class="grid">
+          <div>
+            <label for="base-url">Platform API 地址</label>
+            <input id="base-url" value="http://127.0.0.1:8889" placeholder="http://127.0.0.1:8889">
+          </div>
+          <div>
+            <label for="space-id">Space ID（可选）</label>
+            <input id="space-id" placeholder="space_demo">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="discover" type="button">发现 Spaces / Collections / Assets</button>
+        </div>
+      </section>
+      <section>
+        <h2>Platform 管理</h2>
+        <p>记录 Collection 的只读 freshness 观测。写入只包含公开身份、状态和 revision，不接受文件路径或凭据。</p>
+        <div class="grid">
+          <div>
+            <label for="collection-id">Collection ID</label>
+            <input id="collection-id" placeholder="collection_demo">
+          </div>
+          <div>
+            <label for="collection-version">Collection Version</label>
+            <input id="collection-version" placeholder="v1">
+          </div>
+          <div>
+            <label for="freshness-space-id">Space ID</label>
+            <input id="freshness-space-id" placeholder="space_demo">
+          </div>
+          <div>
+            <label for="freshness-capability">Capability</label>
+            <input id="freshness-capability" value="wiki_query">
+          </div>
+          <div>
+            <label for="freshness-state">State</label>
+            <select id="freshness-state">
+              <option value="ready">ready</option>
+              <option value="stale">stale</option>
+              <option value="blocked">blocked</option>
+            </select>
+          </div>
+          <div>
+            <label for="freshness-mode">Mode（可选）</label>
+            <input id="freshness-mode" placeholder="local_snapshot">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="observe-freshness" type="button">提交 freshness 观测</button>
+        </div>
+        <p id="admin-status" role="status" aria-live="polite"></p>
+      </section>
+      <section>
+        <h2>QueryResult 元数据</h2>
+        <p>只读取 QueryResult 的状态和结果摘要，不下载 artifact 正文。</p>
+        <label for="query-result-id">QueryResult ID</label>
+        <input id="query-result-id" placeholder="query_result_qr_…">
+        <div class="actions">
+          <button id="read-query-result" type="button">读取 QueryResult</button>
+        </div>
+        <div id="query-result-preview"></div>
+      </section>
+      <section>
+        <h2>Analytics / Database Query</h2>
+        <p>两阶段只读查询：先生成服务端 QueryPlan，再由同一 Space 的调用者显式执行；不接受用户输入 SQL。</p>
+        <div class="grid">
+          <div>
+            <label for="database-dataset-id">Database Collection ID</label>
+            <input id="database-dataset-id" placeholder="database_collection_…">
+          </div>
+          <div>
+            <label for="database-semantic-assets">Semantic Asset IDs（可选，逗号分隔）</label>
+            <input id="database-semantic-assets" placeholder="dimension:brand,dimension:model">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="read-database-schema" class="secondary" type="button">读取绑定 Schema</button>
+        </div>
+        <p>Schema 只读取当前 Space 中 Database Collection binding 允许的表和列；内部兼容字段仍使用 dataset_id。不显示连接信息、文件路径、凭据或 SQL。</p>
+        <div id="database-schema-preview"></div>
+        <label for="database-question">Analytics Question</label>
+        <textarea id="database-question" placeholder="例如：按车型统计数量"></textarea>
+        <div class="actions">
+          <button id="generate-database-plan" type="button">生成只读 QueryPlan</button>
+        </div>
+        <div id="database-plan-preview"></div>
+        <div id="database-result-preview"></div>
+      </section>
+      <section>
+        <h2>MCP Resources</h2>
+        <p>通过固定 MCP Resource contract 发现和读取可访问的 portable Resource。</p>
+        <div id="mcp-resources"></div>
+        <div id="mcp-resource-preview"></div>
+      </section>
+      <section>
+        <h2>Semantic Assets</h2>
+        <p>只读查看当前 Space 的 Semantic Markdown 状态；未挂载 registry 时明确显示能力不可用。</p>
+        <div id="semantic-assets"></div>
+      </section>
+      <section>
+        <h2>Sources / Connectors</h2>
+        <p>只读查看 Connector 的逻辑身份和同步状态；Source Item 不展示外部 token、URL、路径或原始 metadata。</p>
+        <div id="connectors"></div>
+        <div id="connector-source-items"></div>
+        <h3>Host-managed Authorization</h3>
+        <p>这里只查看授权状态或创建待授权意图；宿主/Vault 执行真正授权。本 Console 不接收 token、授权 URL 或凭据引用。</p>
+        <div class="grid">
+          <div>
+            <label for="authorization-connector-id">Connector ID</label>
+            <input id="authorization-connector-id" placeholder="connector_…">
+          </div>
+          <div>
+            <label for="authorization-mode">Mode</label>
+            <select id="authorization-mode">
+              <option value="user_reauthorize">user_reauthorize</option>
+              <option value="full_replace">full_replace</option>
+            </select>
+          </div>
+          <div>
+            <label for="authorization-idempotency">Idempotency key</label>
+            <input id="authorization-idempotency" placeholder="connector-auth-local-1">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="refresh-authorizations" type="button">读取授权状态</button>
+          <button id="authorize-connector" type="button">创建待授权意图</button>
+        </div>
+        <div id="connector-authorizations"></div>
+      </section>
+      <section>
+        <h2>Upload / Package Import</h2>
+        <p>Admin staging 边界：只提交宿主预先登记的 binding ID 和内容摘要，不提交文件路径、凭据或原始内容；成功后仍需后续 Processing/Index 流程才能激活。</p>
+        <div class="grid">
+          <div>
+            <label for="upload-asset-id">Asset ID</label>
+            <input id="upload-asset-id" placeholder="asset_local_1">
+          </div>
+          <div>
+            <label for="upload-binding-id">Host Upload Binding ID</label>
+            <input id="upload-binding-id" placeholder="binding_1">
+          </div>
+          <div>
+            <label for="upload-title">Title</label>
+            <input id="upload-title" placeholder="Local notes">
+          </div>
+          <div>
+            <label for="upload-filename">Filename</label>
+            <input id="upload-filename" placeholder="notes.md">
+          </div>
+          <div>
+            <label for="upload-mime-type">MIME type</label>
+            <input id="upload-mime-type" value="text/markdown">
+          </div>
+          <div>
+            <label for="upload-digest">Content digest</label>
+            <input id="upload-digest" placeholder="sha256:…">
+          </div>
+          <div>
+            <label for="upload-idempotency">Idempotency key</label>
+            <input id="upload-idempotency" placeholder="upload-local-1">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="upload-asset" type="button">提交 Asset staging</button>
+        </div>
+        <div id="upload-preview"></div>
+        <div class="grid">
+          <div>
+            <label for="package-ref">Package Binding ID</label>
+            <input id="package-ref" placeholder="package_binding_1">
+          </div>
+          <div>
+            <label for="package-idempotency">Idempotency key</label>
+            <input id="package-idempotency" placeholder="package-import-local-1">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="import-package" type="button">校验并 staging Package</button>
+        </div>
+        <div id="package-preview"></div>
+        <h3>Index Candidate</h3>
+        <p>只提交 Collection/provider 的固定逻辑身份；source binding 由宿主配置，候选完成后不会自动激活。</p>
+        <div class="grid">
+          <div>
+            <label for="index-collection-id">Collection ID</label>
+            <input id="index-collection-id" placeholder="collection_kb_default">
+          </div>
+          <div>
+            <label for="index-collection-version">Collection Version</label>
+            <input id="index-collection-version" placeholder="legacy-v1">
+          </div>
+          <div>
+            <label for="index-capability">Capability</label>
+            <input id="index-capability" value="document_rag_query">
+          </div>
+          <div>
+            <label for="index-provider-id">Provider ID</label>
+            <input id="index-provider-id" value="puddingclaw_platform_candidate_text">
+          </div>
+          <div>
+            <label for="index-idempotency">Idempotency key</label>
+            <input id="index-idempotency" placeholder="index-local-1">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="rebuild-index" type="button">生成 Index Candidate</button>
+        </div>
+        <div id="index-preview"></div>
+      </section>
+      <section>
+        <h2>Platform 通知</h2>
+        <p>只读取已明确绑定到当前 Space 的 Platform 事件；收件箱已读状态不复制、不复用旧通知 ORM。</p>
+        <div id="notifications"></div>
+      </section>
+      <section>
+        <h2>Asset Binding Review Queue</h2>
+        <p>只读查看本地候选绑定的 review ID 和 Catalog 摘要。人工批准仍须在宿主命令行显式执行；Console 不批准、不写 Catalog、不展示本地路径。</p>
+        <div id="asset-binding-reviews"></div>
+      </section>
+      <section>
+        <h2>Processing Job 状态</h2>
+        <p>只读取本地 Catalog 的任务生命周期摘要，不显示文件路径、租约或原始错误。</p>
+        <label for="job-id">Job ID</label>
+        <input id="job-id" placeholder="processing_job_… / authoring_… / sync_…">
+        <div class="actions">
+          <button id="read-job" type="button">读取 Job 状态</button>
+        </div>
+        <div id="job-preview"></div>
+      </section>
+      <section>
+        <label for="query">Knowledge Query</label>
+        <textarea id="query" placeholder="输入要查询的问题"></textarea>
+        <div class="actions">
+          <button id="ask" type="button">查询</button>
+          <button id="clear" class="secondary" type="button">清空结果</button>
+        </div>
+        <p id="status" role="status" aria-live="polite"></p>
+        <div id="discovery"></div>
+        <div id="asset-preview"></div>
+        <div id="result"></div>
+      </section>
+    </main>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

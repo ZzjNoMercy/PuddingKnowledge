@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://puddingknowledge.dev/contracts/mcp-resource/v1",
+  "title": "Knowledge Platform MCP Resource",
+  "oneOf": [
+    { "$ref": "#/$defs/resourceList" },
+    { "$ref": "#/$defs/resourceRead" }
+  ],
+  "$defs": {
+    "portableUri": {
+      "type": "string",
+      "pattern": "^knowledge://[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9][A-Za-z0-9._:-]{0,159})+$"
+    },
+    "portableText": {
+      "type": "string",
+      "not": {
+        "pattern": "(?i)(?:password|api[_ -]?key|secret|token|authorization|cookie|private[_ -]?key|path)\\s*[:=]|(?:https?://|file:|(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\\\/]|\\\\\\\\|(?:^|[\\s(=])/(?:[^\\s]+)|(?:^|[\\s(])~/(?:[^\\s]+))"
+      }
+    },
+    "portableStructuredContent": {
+      "oneOf": [
+        { "$ref": "#/$defs/portableText" },
+        { "type": ["number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/portableStructuredContent" } },
+        {
+          "type": "object",
+          "propertyNames": {
+            "not": { "enum": ["source_path", "file_path", "physical_path", "artifact_path", "raw_markdown", "published_markdown"] }
+          },
+          "additionalProperties": { "$ref": "#/$defs/portableStructuredContent" }
+        }
+      ]
+    },
+    "resourceDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/portableUri" },
+        "name": { "$ref": "#/$defs/portableText" },
+        "title": { "$ref": "#/$defs/portableText" },
+        "description": { "$ref": "#/$defs/portableText" },
+        "mimeType": { "type": "string", "maxLength": 160 }
+      }
+    },
+    "resourceTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uriTemplate"],
+      "properties": {
+        "uriTemplate": {
+          "type": "string",
+          "pattern": "^knowledge://[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9{}._:-]{1,160})+$"
+        },
+        "name": { "$ref": "#/$defs/portableText" },
+        "title": { "$ref": "#/$defs/portableText" },
+        "description": { "$ref": "#/$defs/portableText" },
+        "mimeType": { "type": "string", "maxLength": 160 }
+      }
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resources", "resourceTemplates"],
+      "properties": {
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/resourceDescriptor" } },
+        "resourceTemplates": { "type": "array", "items": { "$ref": "#/$defs/resourceTemplate" } },
+        "nextCursor": { "$ref": "#/$defs/portableText" }
+      }
+    },
+    "resourceContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/portableUri" },
+        "mimeType": { "type": "string", "maxLength": 160 },
+        "text": { "$ref": "#/$defs/portableText" },
+        "blob": { "type": "string" }
+      },
+      "oneOf": [
+        { "required": ["text"], "not": { "required": ["blob"] } },
+        { "required": ["blob"], "not": { "required": ["text"] } }
+      ]
+    },
+    "resourceRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contents"],
+      "properties": {
+        "contents": { "type": "array", "items": { "$ref": "#/$defs/resourceContent" } },
+        "structuredContent": { "$ref": "#/$defs/portableStructuredContent" },
+        "isError": { "type": "boolean" }
+      }
+    }
+  }
+}

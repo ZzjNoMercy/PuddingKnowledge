@@ -1,0 +1,14 @@
+{
+  "name": "@puddingai/knowledge-platform-deploy-cli",
+  "version": "0.1.0-local",
+  "private": true,
+  "description": "Independent local control-plane CLI for the staged Knowledge Platform distribution",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "bin": {
+    "knowledge-platform": "src/cli.mjs"
+  },
+  "files": ["src", "assets", "README.md", "LICENSE"]
+}

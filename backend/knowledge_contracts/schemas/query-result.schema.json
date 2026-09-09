@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://puddingknowledge.dev/contracts/query-result/v1",
+  "title": "Knowledge Query Result",
+  "type": "object",
+  "required": ["status", "answer", "data", "evidence", "warnings", "trace_id"],
+  "properties": {
+    "status": {"enum": ["ok", "error"]},
+    "answer": {"type": "string"},
+    "data": {"type": "object"},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "provenance": {
+      "type": ["object", "null"],
+      "properties": {
+        "space_id": {"type": "string"},
+        "dataset_id": {"type": ["string", "null"]},
+        "dataset_version": {"type": ["string", "null"]},
+        "capability": {"type": "string"},
+        "provider_versions": {"type": "object"},
+        "catalog_revision": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "object"}},
+    "trace_id": {"type": "string", "minLength": 1},
+    "error": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["asset_id", "resource_uri", "locator", "quote", "revision", "matched_by"],
+      "properties": {
+        "asset_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"},
+        "resource_uri": {"type": "string", "pattern": "^knowledge://[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,159})+$"},
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "page": {"$ref": "#/$defs/locator_value"},
+            "line_start": {"$ref": "#/$defs/locator_value"},
+            "line_end": {"$ref": "#/$defs/locator_value"},
+            "section": {"$ref": "#/$defs/locator_value"},
+            "chunk_id": {"$ref": "#/$defs/locator_value"}
+          }
+        },
+        "quote": {"type": "string", "maxLength": 1200, "not": {"pattern": "(?i)(?:https?://|file:|path\\s*[:=]|token\\s*[:=])"}},
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "revision": {"type": "string", "pattern": "^$|^sha256:[0-9a-f]{64}$"},
+        "matched_by": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"}}
+      }
+    },
+    "locator_value": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "not": {"pattern": "(?i)(?:password|api[_ -]?key|secret|token|authorization|cookie|private[_ -]?key|path)\\s*[:=]|(?:https?://|file:|/|~[/]|:\\/|\\\\)"}
+        },
+        {"type": "number"},
+        {"type": "boolean"}
+      ]
+      }
+  }
+}

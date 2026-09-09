@@ -1,0 +1,59 @@
+{
+  "format": "agent-knowledge-platform-skill-bundle/v1",
+  "name": "knowledge-platform-skills",
+  "version": "0.1.0-local",
+  "protocol": "REST-or-MCP-public-contract",
+  "path_policy": "portable-resource-uris-only",
+  "skills": [
+    {
+      "id": "knowledge-query",
+      "path": "skills/query/knowledge-query/SKILL.md",
+      "status": "ready",
+      "operations": [
+        "knowledge_list",
+        "knowledge_search",
+        "knowledge_read",
+        "knowledge_query",
+        "document_rag_query",
+        "wiki_query",
+        "table_query"
+      ]
+    },
+    {
+      "id": "database-query",
+      "path": "skills/query/database-query/SKILL.md",
+      "status": "ready",
+      "operations": ["database_nl2sql", "database_execute_readonly"]
+    },
+    {
+      "id": "semantic-dimension-admin",
+      "path": "skills/admin/semantic-dimension-admin/SKILL.md",
+      "status": "ready",
+      "operations": ["POST /v1/semantic-dimensions", "POST /v1/semantic-dimensions/jobs/{job_id}:decision"]
+    },
+    {
+      "id": "logical-dataset-admin",
+      "path": "skills/admin/logical-dataset-admin/SKILL.md",
+      "status": "ready",
+      "operations": ["POST /v1/datasets", "POST /v1/datasets/{dataset_id}:publish"]
+    },
+    {
+      "id": "sql-guardrail-admin",
+      "path": "skills/admin/sql-guardrail-admin/SKILL.md",
+      "status": "ready",
+      "operations": ["POST /v1/database/guardrails", "POST /v1/database/guardrails/{guardrail_id}:decision"]
+    },
+    {
+      "id": "database-collection-binding-admin",
+      "path": "skills/admin/database-collection-binding-admin/SKILL.md",
+      "status": "ready",
+      "operations": ["POST /v1/database/bindings"]
+    },
+    {
+      "id": "semantic-markdown-admin",
+      "path": "skills/admin/semantic-markdown-admin/SKILL.md",
+      "status": "ready",
+      "operations": ["GET /v1/semantic-assets", "POST /v1/semantic-assets", "POST /v1/semantic-assets/{asset_id}:decision"]
+    }
+  ]
+}

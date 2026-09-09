@@ -1,0 +1,19 @@
+{
+  "format": "knowledge-local-database/v1",
+  "collection_id": "dataset_kb_default",
+  "source": {
+    "dataset_id": "database_sales",
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "sales",
+    "username": "knowledge_reader",
+    "allowed_tables": ["sales"],
+    "password_env": "KNOWLEDGE_DB_PASSWORD"
+  },
+  "vanna": {
+    "root": "/absolute/path/to/local-vanna-collection",
+    "collection_name": "replace-with-verified-collection-name",
+    "package_revision": "replace-with-verified-sha256-digest",
+    "input_digest": "replace-with-verified-sha256-digest"
+  }
+}
