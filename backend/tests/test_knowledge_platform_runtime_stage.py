@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 
 
@@ -25,6 +27,7 @@ def test_stage_uses_backend_metadata_and_flat_owned_module_trees(tmp_path: Path)
     assert {path.name for path in output.iterdir()} == {
         "pyproject.toml",
         "uv.lock",
+        "manifest.json",
         "knowledge_platform",
         "knowledge_contracts",
     }
@@ -45,3 +48,15 @@ def test_stage_uses_backend_metadata_and_flat_owned_module_trees(tmp_path: Path)
             if path.is_file() and path.suffix not in {".pyc"}
         }
         assert staged_files == source_files
+
+
+def test_stage_manifest_covers_exact_owned_install_tree(tmp_path: Path) -> None:
+    output = tmp_path / "runtime"
+    _load_stage_module().stage(output)
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["runtime_kind"] == "local-catalog-wiki"
+    assert manifest["production_activation_allowed"] is False
+    assert manifest["files"] == {
+        str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in output.rglob("*") if p.is_file() and p != output / "manifest.json"
+    }

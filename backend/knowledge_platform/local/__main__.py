@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import signal
 import socket
 from contextlib import contextmanager
@@ -60,9 +61,12 @@ def main() -> int:
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")
+    if args.instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", args.instance_id):
+        parser.error("instance-id must be 32 lowercase hexadecimal characters")
     if args.console_origin:
         origin = urlparse(args.console_origin)
         if (origin.scheme != "http" or origin.hostname not in {"127.0.0.1", "localhost", "::1"}
@@ -131,6 +135,14 @@ def main() -> int:
             from fastapi.middleware.cors import CORSMiddleware
             app.add_middleware(CORSMiddleware, allow_origins=[args.console_origin.rstrip("/")],
                                allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["content-type"])
+        if args.instance_id is not None:
+            instance_id = args.instance_id
+
+            @app.middleware("http")
+            async def add_instance_identity(request, call_next):
+                response = await call_next(request)
+                response.headers["X-PuddingKnowledge-Instance"] = instance_id
+                return response
         with ready.open("x", encoding="utf-8") as stream:
             json.dump({"status": "ready", "pages": materialized["pages"],
                        "activation_allowed": False, "database_configured": bool(database_config),

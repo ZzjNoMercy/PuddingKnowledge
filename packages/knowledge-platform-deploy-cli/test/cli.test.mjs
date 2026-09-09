@@ -1,17 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, mkdir, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, mkdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { validateComposeAsset } from "../src/state.mjs";
+import { validateComposeAsset, verifyRuntimeBundle } from "../src/state.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "src", "cli.mjs");
+const TEMP_ROOT = await realpath(os.tmpdir());
 
 async function tempHome() {
-  return mkdtemp(path.join(os.tmpdir(), "knowledge-platform-cli-"));
+  return mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-cli-"));
 }
 
 async function run(args) {
@@ -44,9 +45,77 @@ test("Platform CLI init/status stay independent and non-activatable", async () =
   }
 });
 
+test("Platform init rejects a Home whose existing parent is a symlink", async () => {
+  const rootHome = await tempHome();
+  const actualParent = path.join(rootHome, "actual-parent");
+  const aliasParent = path.join(rootHome, "alias-parent");
+  const requestedHome = path.join(aliasParent, "home");
+  try {
+    await mkdir(actualParent);
+    await symlink(actualParent, aliasParent);
+    const result = await run(["init", "--home", requestedHome, "--json"]);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stdout).error_code, "invalid_home");
+    await assert.rejects(stat(requestedHome), { code: "ENOENT" });
+  } finally {
+    await rm(rootHome, { recursive: true, force: true });
+  }
+});
+
+test("Platform operations reject configs that are not owned initialized Platform state", async () => {
+  const home = await tempHome();
+  const outputParent = await tempHome();
+  try {
+    await run(["init", "--home", home]);
+    for (const config of [
+      { schema_version: 1, service: "puddingclaw", initialized: true },
+      { service: "puddingknowledge", initialized: true },
+      { schema_version: 1, service: "puddingknowledge", initialized: false },
+      { schema_version: 1, service: "puddingknowledge", initialized: true, activation_allowed: true, infrastructure: { owner: "puddingknowledge" } },
+      { schema_version: 1, service: "puddingknowledge", initialized: true, activation_allowed: false, infrastructure: { owner: "puddingclaw" } },
+    ]) {
+      await writeFile(path.join(home, "platform.json"), JSON.stringify(config));
+      const status = await run(["status", "--home", home, "--json"]);
+      assert.equal(status.code, 1);
+      assert.equal(JSON.parse(status.stdout).error_code, "invalid_state");
+      const backup = await run(["backup", "--home", home, "--output", path.join(outputParent, "snapshot"), "--apply", "--json"]);
+      assert.equal(backup.code, 1);
+      assert.equal(JSON.parse(backup.stdout).error_code, "invalid_state");
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(outputParent, { recursive: true, force: true });
+  }
+});
+
+test("Platform deployment removes a temporary state file when its destination is a directory", async () => {
+  const home = await tempHome();
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-state-dir-"));
+  try {
+    await run(["init", "--home", home]);
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "runtime\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    }));
+    await mkdir(path.join(home, "deployment.json"));
+    const result = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stdout).error_code, "state_write_failed");
+    assert.deepEqual((await readdir(home)).filter((name) => name.includes("deployment.json.") && name.endsWith(".tmp")), []);
+    assert.deepEqual(await readdir(path.join(home, "runtime", "releases")), []);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(bundle, { recursive: true, force: true });
+  }
+});
+
 test("Platform CLI stages a validated deployment without starting processes", async () => {
   const home = await tempHome();
-  const bundle = await mkdtemp(path.join(os.tmpdir(), "knowledge-platform-bundle-"));
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-"));
   try {
     await run(["init", "--home", home]);
     await mkdir(path.join(bundle, "bin"), { recursive: true });
@@ -64,6 +133,63 @@ test("Platform CLI stages a validated deployment without starting processes", as
     assert.equal(deployment.processes_started, false);
     assert.equal(deployment.activation_allowed, false);
     assert.equal(deployment.runtime_file_count, 1);
+    assert.equal(deployment.runtime_bundle_path, path.join(home, "runtime", "releases", deployment.runtime_manifest_digest.slice("sha256:".length)));
+    assert.equal((await stat(path.join(deployment.runtime_bundle_path, "bin", "platform"))).isFile(), true);
+    assert.equal((await stat(path.join(deployment.runtime_bundle_path, "manifest.json"))).isFile(), true);
+    await assert.rejects(readFile(path.join(home, ".runtime-stage.lock")), { code: "ENOENT" });
+    await rm(bundle, { recursive: true, force: true });
+    assert.equal((await stat(path.join(deployment.runtime_bundle_path, "bin", "platform"))).isFile(), true);
+    const repeated = await run(["deploy", "--home", home, "--runtime-bundle", deployment.runtime_bundle_path, "--apply", "--json"]);
+    assert.equal(repeated.code, 0, repeated.stdout + repeated.stderr);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(bundle, { recursive: true, force: true });
+  }
+});
+
+test("Platform runtime verification returns the content address used by owned releases", async () => {
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-verify-"));
+  try {
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "runtime\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    const manifest = {
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    };
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify(manifest));
+    const verified = await verifyRuntimeBundle(bundle);
+    assert.deepEqual(verified.manifest, manifest);
+    assert.equal(verified.digest, createHash("sha256").update(JSON.stringify(manifest), "utf8").digest("hex"));
+  } finally {
+    await rm(bundle, { recursive: true, force: true });
+  }
+});
+
+test("Platform deploy does not overwrite a conflicting content-addressed release", async () => {
+  const home = await tempHome();
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-conflict-"));
+  try {
+    await run(["init", "--home", home]);
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "original\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    const manifest = {
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    };
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify(manifest));
+    const first = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(first.code, 0, first.stdout + first.stderr);
+    const deployment = JSON.parse(first.stdout);
+    await writeFile(path.join(deployment.runtime_bundle_path, "bin", "platform"), "tampered\n");
+    const second = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(second.code, 1);
+    assert.equal(JSON.parse(second.stdout).error_code, "runtime_release_conflict");
+    assert.equal(JSON.parse(await readFile(path.join(home, "deployment.json"), "utf8")).runtime_bundle_path, deployment.runtime_bundle_path);
+    assert.equal(await readFile(path.join(deployment.runtime_bundle_path, "bin", "platform"), "utf8"), "tampered\n");
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(bundle, { recursive: true, force: true });
@@ -72,7 +198,7 @@ test("Platform CLI stages a validated deployment without starting processes", as
 
 test("Platform CLI rejects a bundle whose declared file digest is wrong", async () => {
   const home = await tempHome();
-  const bundle = await mkdtemp(path.join(os.tmpdir(), "knowledge-platform-bundle-invalid-"));
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-invalid-"));
   try {
     await run(["init", "--home", home]);
     await mkdir(path.join(bundle, "bin"), { recursive: true });
@@ -94,8 +220,8 @@ test("Platform CLI rejects a bundle whose declared file digest is wrong", async 
 
 test("Platform CLI rejects undeclared runtime files and symlinks", async () => {
   const home = await tempHome();
-  const bundle = await mkdtemp(path.join(os.tmpdir(), "knowledge-platform-bundle-extra-"));
-  const target = await mkdtemp(path.join(os.tmpdir(), "knowledge-platform-bundle-target-"));
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-extra-"));
+  const target = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-target-"));
   try {
     await run(["init", "--home", home]);
     await mkdir(path.join(bundle, "bin"), { recursive: true });
@@ -110,6 +236,7 @@ test("Platform CLI rejects undeclared runtime files and symlinks", async () => {
     let result = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
     assert.equal(result.code, 1);
     assert.equal(JSON.parse(result.stdout).error_code, "invalid_runtime_bundle");
+    assert.equal((await readdir(path.join(home, "runtime"))).includes("releases"), false);
 
     await rm(path.join(bundle, "bin", "undeclared"));
     await symlink(target, path.join(bundle, "linked-dir"));
@@ -120,6 +247,93 @@ test("Platform CLI rejects undeclared runtime files and symlinks", async () => {
     await rm(home, { recursive: true, force: true });
     await rm(bundle, { recursive: true, force: true });
     await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("Platform deploy rejects a symlink occupying an owned release digest", async () => {
+  const home = await tempHome();
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-release-link-"));
+  const target = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-release-target-"));
+  try {
+    await run(["init", "--home", home]);
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "runtime\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    const manifest = {
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    };
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify(manifest));
+    const { digest } = await verifyRuntimeBundle(bundle);
+    await mkdir(path.join(home, "runtime", "releases"));
+    await symlink(target, path.join(home, "runtime", "releases", digest));
+    const result = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stdout).error_code, "runtime_release_conflict");
+    assert.equal((await readdir(target)).length, 0);
+    await assert.rejects(readFile(path.join(home, "deployment.json")), { code: "ENOENT" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(bundle, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("Platform deploy rejects symlinked bundle and Home ancestors before writing state", async () => {
+  const rootHome = await tempHome();
+  const actualHome = path.join(rootHome, "home");
+  const homeAlias = path.join(rootHome, "home-alias");
+  const bundleParent = path.join(rootHome, "bundle-parent");
+  const bundleAlias = path.join(rootHome, "bundle-alias");
+  const bundle = path.join(bundleParent, "bundle");
+  try {
+    await run(["init", "--home", actualHome]);
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "runtime\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    }));
+    await symlink(rootHome, homeAlias);
+    await symlink(bundleParent, bundleAlias);
+
+    const sourceResult = await run(["deploy", "--home", actualHome, "--runtime-bundle", path.join(bundleAlias, "bundle"), "--apply", "--json"]);
+    assert.equal(sourceResult.code, 1);
+    assert.equal(JSON.parse(sourceResult.stdout).error_code, "invalid_runtime_bundle");
+    const homeResult = await run(["deploy", "--home", path.join(homeAlias, "home"), "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(homeResult.code, 1);
+    assert.equal(JSON.parse(homeResult.stdout).error_code, "invalid_home");
+    await assert.rejects(readFile(path.join(actualHome, "deployment.json")), { code: "ENOENT" });
+  } finally {
+    await rm(rootHome, { recursive: true, force: true });
+  }
+});
+
+test("Platform deploy fails closed while another deployment holds the stage lock", async () => {
+  const home = await tempHome();
+  const bundle = await mkdtemp(path.join(TEMP_ROOT, "knowledge-platform-bundle-lock-"));
+  try {
+    await run(["init", "--home", home]);
+    await mkdir(path.join(bundle, "bin"), { recursive: true });
+    const runtime = "runtime\n";
+    await writeFile(path.join(bundle, "bin", "platform"), runtime);
+    await writeFile(path.join(bundle, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      release_version: "0.1.0-test",
+      files: { "bin/platform": createHash("sha256").update(runtime).digest("hex") },
+    }));
+    await writeFile(path.join(home, ".runtime-stage.lock"), "held\n", { mode: 0o600 });
+    const result = await run(["deploy", "--home", home, "--runtime-bundle", bundle, "--apply", "--json"]);
+    assert.equal(result.code, 1);
+    assert.equal(JSON.parse(result.stdout).error_code, "runtime_stage_locked");
+    assert.equal(await readFile(path.join(home, ".runtime-stage.lock"), "utf8"), "held\n");
+    await assert.rejects(readFile(path.join(home, "deployment.json")), { code: "ENOENT" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(bundle, { recursive: true, force: true });
   }
 });
 

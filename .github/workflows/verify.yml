@@ -34,3 +34,15 @@ jobs:
         working-directory: packages/knowledge-platform-deploy-cli
       - run: npm test
         working-directory: packages/knowledge-platform-skills
+  local-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - run: uv sync --project backend --locked --no-editable
+      - run: uv run --project backend --no-sync python integration/local_service_smoke.py --repo "$PWD" --fixture-python "$PWD/backend/.venv/bin/python"

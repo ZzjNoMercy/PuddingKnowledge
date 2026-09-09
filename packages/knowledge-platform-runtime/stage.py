@@ -2,6 +2,9 @@
 from pathlib import Path
 import argparse
 import shutil
+import hashlib
+import json
+import tomllib
 
 
 def stage(output: Path) -> None:
@@ -29,6 +32,15 @@ def stage(output: Path) -> None:
     for source in sources:
         shutil.copytree(source, output / source.name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+    files = {str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(output.rglob("*")) if p.is_file()}
+    version = tomllib.loads((output / "pyproject.toml").read_text())["project"]["version"]
+    (output / "manifest.json").write_text(json.dumps({
+        "schema_version": 1, "release_version": version,
+        "owner": "puddingknowledge", "runtime_kind": "local-catalog-wiki",
+        "production_activation_allowed": False, "files": files,
+    }, sort_keys=True, indent=2) + "\n")
 
 
 if __name__ == "__main__":

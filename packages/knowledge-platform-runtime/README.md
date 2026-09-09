@@ -14,13 +14,15 @@ existing tools.
 From the repository root, choose a new staging path:
 
 ```bash
-python3 packages/knowledge-platform-runtime/stage.py --output /private/tmp/knowledge-install
+uv run --project backend --no-sync python packages/knowledge-platform-runtime/stage.py --output /private/tmp/knowledge-install
 uv sync --project /private/tmp/knowledge-install --locked --no-editable --no-dev
 /private/tmp/knowledge-install/.venv/bin/puddingknowledge-local --help
 ```
 
-The generated tree contains only `knowledge_platform`, `knowledge_contracts`,
-package metadata and its own `uv.lock`. It needs neither the Claw virtualenv nor
+The generated tree contains `knowledge_platform`, `knowledge_contracts`, package
+metadata, its own `uv.lock`, and a content manifest. For Deploy CLI use a fresh
+stage: the direct installation above adds environment/build files to the stage,
+so it is no longer an unchanged deployment bundle. It needs neither the Claw virtualenv nor
 `PYTHONPATH`. Network is needed only if locked dependencies are missing locally.
 The lock covers this local query surface, not every optional Platform provider.
 
@@ -129,3 +131,10 @@ on macOS (for example `/private/tmp`, not the `/tmp` symlink); arbitrary symlink
 components remain rejected.
 
 The extracted repository uses backend/pyproject.toml and backend/uv.lock as its authoritative runtime metadata. stage.py copies those exact files and the two owned modules into a flat install tree. The package-local manifests are historical extraction inputs. Use the excel extra for XLS/Excel provider parsing; pure Markdown/CSV Workspace materialization does not require pandas.
+
+The staging command also writes a Deploy CLI-compatible `manifest.json` covering
+every staged source and dependency file. Use the Deploy CLI's explicit
+`deploy --apply`, `install --apply`, and `start --apply` sequence to install this
+local runtime without a checkout on PYTHONPATH. This remains the local snapshot
+runtime; complete persistent Processing/Authoring and production activation are
+separate acceptance requirements.

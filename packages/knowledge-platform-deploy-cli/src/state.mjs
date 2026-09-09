@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const CONFIG_FILE = "platform.json";
@@ -57,6 +57,7 @@ const REQUIRED_COMPOSE_SECRET_INPUTS = Object.freeze([
   "PUDDINGKNOWLEDGE_WORKER_IMAGE",
   "PUDDINGKNOWLEDGE_CONSOLE_IMAGE",
 ]);
+const RUNTIME_STAGE_LOCK = ".runtime-stage.lock";
 
 export class PlatformCliError extends Error {
   constructor(message, { code = "platform_cli_error", exitCode = 1 } = {}) {
@@ -79,6 +80,50 @@ function assertRelative(value, label) {
     throw new PlatformCliError(`${label} is invalid`, { code: "invalid_path" });
   }
   return value;
+}
+
+async function assertNoSymlinkAncestors(target, label, code, { allowMissing = false } = {}) {
+  if (typeof target !== "string" || !path.isAbsolute(target)) {
+    throw new PlatformCliError(`${label} must be an absolute path`, { code });
+  }
+  let current = path.parse(target).root;
+  for (const component of target.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    let metadata;
+    try {
+      metadata = await lstat(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        if (allowMissing) return;
+        throw new PlatformCliError(`${label} cannot be inspected`, { code });
+      }
+      throw new PlatformCliError(`${label} cannot be inspected`, { code });
+    }
+    if (metadata.isSymbolicLink()) {
+      throw new PlatformCliError(`${label} contains a symlink`, { code });
+    }
+  }
+}
+
+async function assertExistingHomeDirectory(home) {
+  await assertNoSymlinkAncestors(home, "Platform Home", "invalid_home");
+  const metadata = await lstat(home).catch(() => null);
+  if (!metadata || metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new PlatformCliError("Platform Home must be a real directory", { code: "invalid_home" });
+  }
+}
+
+async function acquireRuntimeStageLock(home) {
+  const lockPath = path.join(home, RUNTIME_STAGE_LOCK);
+  try {
+    await writeFile(lockPath, `${randomUUID()}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new PlatformCliError("another runtime deployment is already staging", { code: "runtime_stage_locked" });
+    }
+    throw new PlatformCliError("runtime deployment lock cannot be acquired", { code: "runtime_stage_lock_unavailable" });
+  }
+  return lockPath;
 }
 
 async function bundleFiles(root, prefix = "") {
@@ -107,6 +152,7 @@ export async function ensureHome(home) {
   if (typeof home !== "string" || !path.isAbsolute(home)) {
     throw new PlatformCliError("Platform Home must be an absolute path", { code: "invalid_home" });
   }
+  await assertNoSymlinkAncestors(path.dirname(home), "Platform Home", "invalid_home", { allowMissing: true });
   try {
     const metadata = await lstat(home);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -145,6 +191,8 @@ async function writeJsonAtomic(file, value) {
     await rename(temporary, file);
   } catch (error) {
     throw new PlatformCliError(`${path.basename(file)} cannot be written`, { code: "state_write_failed" });
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
   }
 }
 
@@ -170,12 +218,6 @@ async function ensureManagedDirectories(home) {
       }
     }
   }
-}
-
-async function sha256File(file) {
-  const digest = createHash("sha256");
-  digest.update(await readFile(file));
-  return digest.digest("hex");
 }
 
 function assertBackupRelative(value, label = "backup path") {
@@ -756,7 +798,22 @@ export function defaultConfig() {
 }
 
 export async function loadConfig(home) {
-  return readJson(path.join(home, CONFIG_FILE));
+  await assertNoSymlinkAncestors(home, "Platform Home", "invalid_home");
+  const config = await readJson(path.join(home, CONFIG_FILE));
+  if (config === null) return null;
+  if (
+    config.schema_version !== 1
+    || config.service !== "puddingknowledge"
+    || config.initialized !== true
+    || config.activation_allowed !== false
+    || !config.infrastructure
+    || typeof config.infrastructure !== "object"
+    || Array.isArray(config.infrastructure)
+    || config.infrastructure.owner !== "puddingknowledge"
+  ) {
+    throw new PlatformCliError("Platform config schema or ownership is invalid", { code: "invalid_state" });
+  }
+  return config;
 }
 
 export async function initialize(home, { force = false } = {}) {
@@ -790,9 +847,38 @@ export function validateRuntimeManifest(manifest) {
   return manifest;
 }
 
-export async function stageDeployment(home, bundlePath) {
+async function readStableRegularFile(file, label) {
+  let before;
+  try {
+    before = await lstat(file);
+  } catch {
+    throw new PlatformCliError(`${label} is unavailable`, { code: "invalid_runtime_bundle" });
+  }
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new PlatformCliError(`${label} must be a regular file`, { code: "invalid_runtime_bundle" });
+  }
+  let bytes;
+  try {
+    bytes = await readFile(file);
+  } catch {
+    throw new PlatformCliError(`${label} cannot be read`, { code: "invalid_runtime_bundle" });
+  }
+  const after = await lstat(file).catch(() => null);
+  if (!after || after.isSymbolicLink() || !after.isFile()
+    || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) {
+    throw new PlatformCliError(`${label} changed during validation`, { code: "invalid_runtime_bundle" });
+  }
+  return { bytes, mode: before.mode & 0o7777 };
+}
+
+async function inspectRuntimeBundle(bundlePath) {
   if (typeof bundlePath !== "string" || !path.isAbsolute(bundlePath)) {
     throw new PlatformCliError("runtime bundle must be an absolute path", { code: "invalid_runtime_bundle" });
+  }
+  await assertNoSymlinkAncestors(bundlePath, "runtime bundle", "invalid_runtime_bundle");
+  const bundleMetadata = await lstat(bundlePath).catch(() => null);
+  if (!bundleMetadata || bundleMetadata.isSymbolicLink() || !bundleMetadata.isDirectory()) {
+    throw new PlatformCliError("runtime bundle must be a real directory", { code: "invalid_runtime_bundle" });
   }
   const bundleRoot = await realpath(bundlePath).catch(() => {
     throw new PlatformCliError("runtime bundle cannot be resolved", { code: "invalid_runtime_bundle" });
@@ -800,8 +886,8 @@ export async function stageDeployment(home, bundlePath) {
   const manifestPath = path.join(bundleRoot, "manifest.json");
   let manifest;
   try {
-    if ((await lstat(manifestPath)).isSymbolicLink()) throw new Error("manifest symlink");
-    manifest = validateRuntimeManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+    const manifestFile = await readStableRegularFile(manifestPath, "runtime bundle manifest");
+    manifest = validateRuntimeManifest(JSON.parse(manifestFile.bytes.toString("utf8")));
     const declaredFiles = Object.keys(manifest.files).sort();
     const actualFiles = (await bundleFiles(bundleRoot)).sort();
     if (JSON.stringify(declaredFiles) !== JSON.stringify(actualFiles)) {
@@ -811,16 +897,94 @@ export async function stageDeployment(home, bundlePath) {
       const candidate = path.resolve(bundleRoot, file);
       const relative = path.relative(bundleRoot, candidate);
       if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("file outside bundle");
-      const metadata = await lstat(candidate);
-      if (!metadata.isFile() || metadata.isSymbolicLink() || await sha256File(candidate) !== expectedDigest) {
-        throw new Error("runtime bundle file digest mismatch");
-      }
+      const candidateFile = await readStableRegularFile(candidate, `runtime bundle file ${file}`);
+      const digest = createHash("sha256").update(candidateFile.bytes).digest("hex");
+      if (digest !== expectedDigest) throw new Error("runtime bundle file digest mismatch");
     }
+    return {
+      bundleRoot,
+      manifest,
+      digest: createHash("sha256").update(JSON.stringify(manifest), "utf8").digest("hex"),
+    };
   } catch (error) {
     if (error instanceof PlatformCliError) throw error;
     throw new PlatformCliError("runtime bundle manifest or file digest is invalid", { code: "invalid_runtime_bundle" });
   }
-  const digest = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+}
+
+export async function verifyRuntimeBundle(bundlePath) {
+  const { manifest, digest } = await inspectRuntimeBundle(bundlePath);
+  return { manifest, digest };
+}
+
+async function copyStableFile(source, destination, label) {
+  const sourceFile = await readStableRegularFile(source, label);
+  await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+  await writeFile(destination, sourceFile.bytes, { mode: sourceFile.mode });
+  await chmod(destination, sourceFile.mode);
+}
+
+async function verifyPublishedRuntimeRelease(releaseRoot, expectedManifest, expectedDigest) {
+  const metadata = await lstat(releaseRoot).catch(() => null);
+  if (!metadata || metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new PlatformCliError("runtime release is not a real directory", { code: "runtime_release_conflict" });
+  }
+  let inspected;
+  try {
+    inspected = await inspectRuntimeBundle(releaseRoot);
+  } catch {
+    throw new PlatformCliError("existing runtime release does not match manifest", { code: "runtime_release_conflict" });
+  }
+  if (inspected.digest !== expectedDigest || JSON.stringify(inspected.manifest) !== JSON.stringify(expectedManifest)) {
+    throw new PlatformCliError("existing runtime release does not match manifest", { code: "runtime_release_conflict" });
+  }
+  return inspected;
+}
+
+async function ensureRuntimeReleaseRoot(home) {
+  const runtimeRoot = path.join(home, "runtime");
+  const runtimeMetadata = await lstat(runtimeRoot).catch(() => null);
+  if (!runtimeMetadata || runtimeMetadata.isSymbolicLink() || !runtimeMetadata.isDirectory()) {
+    throw new PlatformCliError("Platform runtime directory is unsafe", { code: "invalid_home" });
+  }
+  const releasesRoot = path.join(runtimeRoot, "releases");
+  const releasesMetadata = await lstat(releasesRoot).catch(() => null);
+  if (releasesMetadata) {
+    if (releasesMetadata.isSymbolicLink() || !releasesMetadata.isDirectory()) {
+      throw new PlatformCliError("Platform runtime releases directory is unsafe", { code: "invalid_home" });
+    }
+  } else {
+    await mkdir(releasesRoot, { mode: 0o700 });
+  }
+  return releasesRoot;
+}
+
+async function stageDeploymentUnlocked(home, bundlePath) {
+  const inspectedBundle = await inspectRuntimeBundle(bundlePath);
+  const { bundleRoot, manifest, digest } = inspectedBundle;
+  const releasesRoot = await ensureRuntimeReleaseRoot(home);
+  const releaseRoot = path.join(releasesRoot, digest);
+  let releaseCreated = false;
+  const existingRelease = await lstat(releaseRoot).catch(() => null);
+  if (existingRelease) {
+    await verifyPublishedRuntimeRelease(releaseRoot, manifest, digest);
+  } else {
+    const temporaryRelease = path.join(releasesRoot, `.release-${digest}-${randomUUID()}.tmp`);
+    try {
+      await mkdir(temporaryRelease, { mode: 0o700 });
+      await copyStableFile(path.join(bundleRoot, "manifest.json"), path.join(temporaryRelease, "manifest.json"), "runtime bundle manifest");
+      for (const file of Object.keys(manifest.files)) {
+        await copyStableFile(path.join(bundleRoot, file), path.join(temporaryRelease, file), `runtime bundle file ${file}`);
+      }
+      await verifyPublishedRuntimeRelease(temporaryRelease, manifest, digest);
+      await rename(temporaryRelease, releaseRoot);
+      releaseCreated = true;
+    } catch (error) {
+      await rm(temporaryRelease, { recursive: true, force: true }).catch(() => {});
+      if (error instanceof PlatformCliError) throw error;
+      throw new PlatformCliError("runtime release could not be published", { code: "runtime_release_publish_failed" });
+    }
+  }
   const deployment = {
     schema_version: 1,
     status: "staged_not_running",
@@ -829,10 +993,26 @@ export async function stageDeployment(home, bundlePath) {
     runtime_release: manifest.release_version,
     runtime_file_count: Object.keys(manifest.files).length,
     runtime_manifest_digest: `sha256:${digest}`,
+    runtime_bundle_path: releaseRoot,
     execution: "deferred_to_platform_supervisor",
   };
-  await writeJsonAtomic(path.join(home, DEPLOYMENT_FILE), deployment);
+  try {
+    await writeJsonAtomic(path.join(home, DEPLOYMENT_FILE), deployment);
+  } catch (error) {
+    if (releaseCreated) await rm(releaseRoot, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
   return deployment;
+}
+
+export async function stageDeployment(home, bundlePath) {
+  await assertExistingHomeDirectory(home);
+  const lockPath = await acquireRuntimeStageLock(home);
+  try {
+    return await stageDeploymentUnlocked(home, bundlePath);
+  } finally {
+    await rm(lockPath, { force: true }).catch(() => {});
+  }
 }
 
 export async function stageOperation(home, kind, details = {}) {

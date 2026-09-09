@@ -2,7 +2,7 @@
 
 import os from "node:os";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, lstat } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
 import {
@@ -25,6 +25,8 @@ import {
   validateMigrationManifest,
 } from "./state.mjs";
 
+import { installRuntime, runtimeCommand } from "./runtime-install.mjs";
+
 const { version } = createRequire(import.meta.url)("../package.json");
 const DEFAULT_HOME = path.join(os.homedir(), ".puddingknowledge");
 
@@ -45,7 +47,7 @@ function parseArgs(argv) {
     }
     const value = inline ?? argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PlatformCliError(`missing value for --${rawName}`, { code: "argument_error" });
-    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest"].includes(name)) {
+    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config"].includes(name)) {
       throw new PlatformCliError(`unknown option: --${rawName}`, { code: "argument_error" });
     }
     flags[name] = value;
@@ -57,6 +59,9 @@ function usage() {
   return [
     "Knowledge Platform CLI",
     "",
+    "  knowledge-platform install [--home <absolute-path>] [--apply] [--json]",
+    "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--apply] [--json]",
+    "  knowledge-platform stop [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform init [--home <absolute-path>] [--force] [--json]",
     "  knowledge-platform status [--home <absolute-path>] [--json]",
     "  knowledge-platform plan <deploy|infrastructure|health|backup|upgrade|migrate|import|export|index> [--home <absolute-path>] [--json]",
@@ -91,11 +96,25 @@ async function main(argv) {
   if (flags.help || !positionals[0]) return { value: usage(), code: 0 };
   const command = positionals[0];
   const requestedHome = flags.home || process.env.PUDDINGKNOWLEDGE_HOME || DEFAULT_HOME;
+  if (!path.isAbsolute(requestedHome)) throw new PlatformCliError("Platform Home must be absolute", { code: "invalid_home" });
   const home = path.resolve(requestedHome);
   if (command === "version") return { value: { schema_version: 1, cli: "knowledge-platform", cli_version: version }, code: 0 };
   if (command === "init") return { value: await initialize(home, { force: Boolean(flags.force) }), code: 0 };
-  if (command === "status") return { value: await status(home), code: 0 };
-  if (command === "health") return { value: await health(home), code: 0 };
+  if (["install", "start", "stop"].includes(command)) {
+    if (!(await loadConfig(home))) throw new PlatformCliError("Platform is not initialized", { code: "not_initialized" });
+    if (!flags.apply) return { value: plan(command, home), code: 0 };
+    return { value: command === "install" ? await installRuntime(home) : await runtimeCommand(command, home, flags), code: 0 };
+  }
+  if (command === "status" || command === "health") {
+    const metadata = command === "status" ? await status(home) : await health(home);
+    let installed = false;
+    try { await lstat(path.join(home, "runtime", "installed.json")); installed = true; }
+    catch (e) { if (e.code !== "ENOENT") throw e; }
+    if (!installed) return { value: metadata, code: 0 };
+    const observed = await runtimeCommand("status", home);
+    return { value: { ...metadata, status: observed.status, runtime_observation: observed },
+      code: command === "health" && observed.status !== "running" ? 1 : 0 };
+  }
   if (command === "backup" && flags.validate) {
     if (flags.apply || flags.home || flags.backup || flags.target || flags.migration_manifest || flags.force || typeof flags.output !== "string") {
       throw new PlatformCliError("backup --validate requires --output and cannot use --apply", { code: "argument_error" });

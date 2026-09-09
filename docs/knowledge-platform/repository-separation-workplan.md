@@ -90,3 +90,40 @@ The Knowledge target now owns its locked backend dependencies, independent encry
 The phase-gate manifest no longer inherits verified claims whose source inventory, Vanna provenance or source shadow artifact is absent in this target. They remain blocked. The existing provider-neutral Phase 0C claims still execute their checks; changed-evidence and failed-check rejection remain tested. This correction does not activate production.
 
 The next runtime gap is explicit: deploy --apply currently stages metadata, while puddingknowledge-local runs only explicit local snapshots. A separately owned local start/status/stop supervisor, actual endpoint health, restart/crash recovery and executable stateful upgrade/rollback remain to implement and verify. Full Processing/Authoring and production authentication are also not yet accepted.
+
+2026-09-10 Runtime composition audit (independent target)
+
+The deploy/install/supervisor slice adds executable local lifecycle, but does not
+close full Processing/Authoring. Source inspection identifies these concrete
+remaining composition gaps:
+
+- WikiCompilationWorker exists in wiki/compiler.py and admin compile routes
+  exist, but local/app.py does not accept or construct wiki_compilation.
+- Semantic authoring/decision/build services and routes exist, but local app
+  composition has no semantic_authoring, semantic_decisions or semantic_processing.
+- CaptureProcessingWorker and ConnectorSyncWorker have transport adapters but
+  no independent configured source/job/snapshot composition. Deploy CLI
+  import/export/index still stage operations instead of invoking workers.
+
+The existing local/structured.py composition is the currently wired durable
+Logical Dataset path. Next acceptance must prove actual independently started
+workers can import, process, compile, publish and resume after restart using
+Platform-owned persistent state, without a legacy worker or source checkout.
+
+Executable local lifecycle checkpoint: the bundle is now copied and verified in
+Home-owned content-addressed releases, installed as a locked non-editable wheel
+through a disposable build directory, and supervised through authenticated local
+control. Health requires the owned runtime's per-run instance identity as well
+as child liveness and readiness. Supervisor death closes a lifeline pipe so the
+runtime exits; startup failures preserve failed state and reap only their own
+Popen handle. Home ancestors, product owner metadata, staged semantics, temporary
+publication cleanup, and duplicate operations have explicit rejection tests.
+
+Validation: Deploy CLI 39 passed; supervisor 12 passed including actual external
+HTTP collision, concurrent start, manager SIGKILL and same-port restart; existing
+local runtime/structured/staging/distribution regressions 20 passed. The full
+stage/deploy/install/start/health/stop/restart smoke passed after deleting the
+source bundle, with original Catalog preserved and no legacy Home writes.
+Production activation and the Processing/Authoring composition gaps above remain
+unaccepted. CI now contains the executable lifecycle smoke; remote CI itself has
+not been run.
