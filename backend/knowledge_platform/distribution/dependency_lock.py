@@ -1,11 +1,4 @@
-"""Read-only dependency-lock split preflight for the Phase 10 boundary.
-
-The current checkout has one PuddingClaw Python project and one uv lock.  This
-module checks that the existing declarations are represented in that lock,
-then explicitly records the still-missing target lock boundary.  It never
-regenerates a lock, downloads packages, or infers a dependency split from
-package names alone.
-"""
+"""Read-only dependency-lock preflight for the independent Platform target."""
 
 from __future__ import annotations
 
@@ -22,7 +15,7 @@ _FORMAT = "agent-knowledge-platform-phase10-dependency-lock-preflight/v1"
 _STATUS = "PHASE10_DEPENDENCY_LOCK_PREFLIGHT_BLOCKED"
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)")
-_TARGET_LOCKFILES = ("puddingknowledge/uv.lock", "puddingharness/uv.lock")
+_TARGET_LOCKFILES = ("backend/uv.lock",)
 
 
 class DependencyLockError(ValueError):
@@ -133,7 +126,7 @@ class DependencyLockPreflight:
     independent_repository_verified: bool = False
 
     def __post_init__(self) -> None:
-        if self.source_project != "puddingclaw-backend":
+        if self.source_project != "puddingknowledge-local":
             raise DependencyLockError("source project is not explicit")
         if not self.source_project_version or any(ord(character) < 32 for character in self.source_project_version):
             raise DependencyLockError("source project version is invalid")
@@ -183,7 +176,7 @@ class DependencyLockPreflight:
             "network_contacted": self.network_contacted,
             "lock_regenerated": self.lock_regenerated,
             "independent_repository_verified": self.independent_repository_verified,
-            "scope": "same-checkout declaration/lock consistency only; target dependency split and independent lock generation are pending",
+            "scope": "target-owned pyproject/uv.lock declaration consistency only; release verification remains pending",
         }
 
 
@@ -196,7 +189,7 @@ def _build_once(repo_root: Path) -> DependencyLockPreflight:
     project = metadata["project"]
     declared = _declared_dependencies(metadata)
     locked = _locked_packages(lock_metadata)
-    requirements_names = _requirements_names(requirements)
+    requirements_names = _requirements_names(requirements) if requirements.is_file() else ()
     target_lockfiles = tuple((path, (repo_root / path).is_file()) for path in _TARGET_LOCKFILES)
     optional = project.get("optional-dependencies", {})
     mixed = isinstance(optional, dict) and "knowledge" in optional and "analytics" in optional
@@ -209,7 +202,11 @@ def _build_once(repo_root: Path) -> DependencyLockPreflight:
         requirements_packages=requirements_names,
         missing_requirements_from_uv_lock=tuple(sorted(set(requirements_names) - set(locked))),
         source_lock_digest=_sha256(uv_lock),
-        requirements_digest=_sha256(requirements),
+        requirements_digest=(
+            _sha256(requirements)
+            if requirements.is_file()
+            else "sha256:" + hashlib.sha256(b"").hexdigest()
+        ),
         target_lockfiles=target_lockfiles,
         mixed_project_dependency_graph=mixed,
         replay_consistent=True,

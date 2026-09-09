@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,35 +82,32 @@ def test_phase9_boundary_rejects_same_specificity_overlap() -> None:
         manifest.owner_for("foo/aa")
 
 
-def test_phase9_boundary_shadow_runs_against_current_repository(tmp_path: Path) -> None:
-    from scripts.phase9_local_distribution_boundary_shadow import run_shadow
-
-    result = run_shadow(output_dir=tmp_path)
-    assert result["status"] == "PHASE9_DISTRIBUTION_BOUNDARY_INVENTORY_PASS_NOT_ACTIVATABLE"
-    assert result["activation_allowed"] is False
-    assert result["files_moved"] is False
-    assert result["files_deleted"] is False
-    assert result["missing_anchors"] == []
-    assert result["coverage"]["unclassified_count"] == 0
-    assert result["coverage"]["ambiguous_count"] == 0
-    assert result["console_surface"]["status"] == "verified"
-    assert result["console_surface"]["surface_ids"] == [
-        "knowledge",
-        "analytics",
-        "oauth",
-        "imports",
-        "sources",
-        "schema",
-        "results",
-        "notifications",
-    ]
-    assert result["console_surface"]["file_count"] == 5
-
-
 def test_phase9_boundary_shadow_rejects_console_dist_tampering(tmp_path: Path) -> None:
     from scripts.phase9_local_distribution_boundary_shadow import _read_console_surface_manifest
 
-    source_dist = Path(__file__).resolve().parents[2] / "packages/knowledge-platform-console/dist"
+    repo_root = Path(__file__).resolve().parents[2]
+    console_source = repo_root / "packages/knowledge-platform-console"
+    contracts_source = repo_root / "packages/knowledge-platform-console-contracts"
+    build_root = tmp_path / "console-build"
+    build_console = build_root / "packages/knowledge-platform-console"
+    build_contracts = build_root / "packages/knowledge-platform-console-contracts"
+    shutil.copytree(
+        console_source,
+        build_console,
+        ignore=shutil.ignore_patterns("dist", "node_modules"),
+    )
+    shutil.copytree(contracts_source, build_contracts)
+    node = shutil.which("node")
+    assert node is not None, "the boundary test requires the Node.js build tool"
+    build = subprocess.run(
+        [node, "scripts/build.mjs"],
+        cwd=build_console,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr or build.stdout
+    source_dist = build_console / "dist"
 
     def make_repo(name: str) -> Path:
         repo = tmp_path / name
@@ -164,29 +162,6 @@ def test_phase9_boundary_scoped_audit_accepts_real_unicode_and_route_paths() -> 
     assert audit["ambiguous_paths"] == ()
 
 
-def test_phase9_mixed_surface_marker_shadow_is_manual_review_only(tmp_path: Path) -> None:
-    from scripts.phase9_local_mixed_surface_shadow import run_shadow
-
-    result = run_shadow(output_path=tmp_path / "mixed.json")
-    assert result["status"] == "PHASE9_MIXED_SURFACE_MARKER_PASS_NOT_ACTIVATABLE"
-    assert result["activation_allowed"] is False
-    assert result["execution_allowed"] is False
-    assert result["manual_review_required"] is True
-    assert result["semantic_equivalence_proven"] is False
-    assert len(result["probes"]) == 7
-    assert all(item["status"] == "verified" for item in result["probes"])
-    assert all(item["ownership_matches"] is True for item in result["probes"])
-    assert all(all(lines for lines in item["required_marker_lines"]) for item in result["probes"])
-    assert all(all(len(lines) <= 8 for lines in item["required_marker_lines"]) for item in result["probes"])
-    assert all(len(item["required_marker_line_counts"]) == item["required_marker_count"] for item in result["probes"])
-    assert all(len(item["symbol_evidence"]) == item["required_marker_count"] for item in result["probes"])
-    assert all(
-        evidence["action"] in {"retain_harness", "extract_platform", "shared_adapter"}
-        for item in result["probes"]
-        for evidence in item["symbol_evidence"]
-    )
-
-
 def test_phase9_mixed_surface_shadow_report_matches_versioned_schema(tmp_path: Path) -> None:
     import json
 
@@ -199,34 +174,6 @@ def test_phase9_mixed_surface_shadow_report_matches_versioned_schema(tmp_path: P
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     assert list(Draft202012Validator(schema).iter_errors(json.loads(report_path.read_text(encoding="utf-8")))) == []
-
-
-def test_phase9_mixed_surface_schema_rejects_invalid_action_missing_evidence_and_long_samples() -> None:
-    import copy
-    import json
-
-    from jsonschema import Draft202012Validator
-
-    from scripts.phase9_local_mixed_surface_shadow import _SCHEMA
-
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
-    validator = Draft202012Validator(schema)
-    source = json.loads(
-        (Path(__file__).resolve().parents[2] / "artifacts/phase0b-local-catalog/phase9-local-mixed-surface-shadow-report.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    invalid_action = copy.deepcopy(source)
-    invalid_action["probes"][0]["symbol_evidence"][0]["action"] = "invented_action"
-    assert list(validator.iter_errors(invalid_action))
-
-    missing_evidence = copy.deepcopy(source)
-    del missing_evidence["probes"][0]["symbol_evidence"]
-    assert list(validator.iter_errors(missing_evidence))
-
-    long_samples = copy.deepcopy(source)
-    long_samples["probes"][0]["required_marker_lines"][0] = list(range(1, 10))
-    assert list(validator.iter_errors(long_samples))
 
 
 def test_phase9_mixed_surface_marker_shadow_blocks_missing_marker(tmp_path: Path) -> None:

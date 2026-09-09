@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
 
@@ -8,7 +7,7 @@ import pytest
 
 import knowledge_platform.local.catalog as wiki_shadow
 from knowledge_contracts import Correlation, Evidence, QueryResult
-from scripts.phase6_local_wiki_query_shadow import _materialize_catalog, _safe_pages, _snapshot_catalog
+from scripts.phase6_local_wiki_query_shadow import _safe_pages, _snapshot_catalog
 from scripts.phase8_local_platform_http_shadow import _collection_summary, _http_summary, _mcp_collection_summary
 
 
@@ -70,24 +69,6 @@ def test_collection_shadow_summaries_keep_only_canonical_discovery_facts() -> No
         "status": "ok",
         "canonical_uri_read": True,
     }
-
-
-def test_materialize_catalog_normalizes_relative_wiki_root(monkeypatch, tmp_path: Path) -> None:
-    root = Path(__file__).parents[2]
-    monkeypatch.chdir(root)
-    wiki_root = tmp_path / "wiki"
-    wiki_root.mkdir()
-    (wiki_root / "page.md").write_text("# Local page\n\nagent boundary\n", encoding="utf-8")
-
-    relative_wiki_root = Path(os.path.relpath(wiki_root, root))
-    materialized = _materialize_catalog(
-        Path("artifacts/phase0b-local-catalog/knowledge-platform.sqlite3"),
-        tmp_path / "catalog.sqlite3",
-        relative_wiki_root,
-    )
-
-    assert materialized["pages"] == 1
-    assert all(path.is_absolute() for path in materialized["file_bindings"].values())
 
 
 def test_catalog_snapshot_rejects_symlink_source(tmp_path: Path) -> None:

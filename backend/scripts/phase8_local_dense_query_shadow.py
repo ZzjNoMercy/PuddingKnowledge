@@ -15,8 +15,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pymilvus import MilvusClient
-
 from knowledge_platform.catalog import SqliteCatalogQueryRepository
 from knowledge_platform.catalog.vector_rebuild import VectorRebuildManifest
 from knowledge_platform.retrieval.local_transformers_embedding import LocalTransformersEmbeddingClient
@@ -31,6 +29,20 @@ _DEFAULT_CHUNKS = _DEFAULT_OUTPUT_DIR / "phase8-local-vector-chunks.json"
 _DEFAULT_MODEL_DIR = Path("/Users/pet/models/jina-embeddings-v4-vllm-retrieval")
 _COLLECTION = "puddingclaw_platform_candidate_text"
 _SPACE_ID = "space_kb_default"
+MilvusClient = None
+
+
+def _milvus_client(*, uri: str, timeout: int) -> Any:
+    """Load the optional Milvus provider only for the real-client path."""
+
+    global MilvusClient
+    if MilvusClient is None:
+        try:
+            from pymilvus import MilvusClient as client_type
+        except ModuleNotFoundError as error:
+            raise RuntimeError("optional provider pymilvus is required for a dense query") from error
+        MilvusClient = client_type
+    return MilvusClient(uri=uri, timeout=timeout)
 
 
 def _digest(value: object) -> str:
@@ -103,7 +115,7 @@ def run_shadow(
             raise ValueError("dense query manifest is not the candidate")
         repository = catalog_repository or SqliteCatalogQueryRepository(catalog)
         revision_before = repository.catalog_revision
-        client = milvus_client or MilvusClient(uri=milvus_uri, timeout=10)
+        client = milvus_client or _milvus_client(uri=milvus_uri, timeout=10)
         if not client.has_collection(collection_name=_COLLECTION):
             raise ValueError("dense candidate collection is unavailable")
         stats = client.get_collection_stats(collection_name=_COLLECTION)

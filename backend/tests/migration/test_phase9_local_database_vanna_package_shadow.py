@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from knowledge_platform.database import DatabaseSchemaTable
 from knowledge_platform.package import KnowledgePackageBuilder, validate_package
+from scripts import phase9_local_database_vanna_package_shadow as database_shadow
 from scripts.phase9_local_database_vanna_package_shadow import (
     _EXPECTED_COLUMNS,
     _TABLE,
@@ -12,6 +14,10 @@ from scripts.phase9_local_database_vanna_package_shadow import (
     _curated_ddl,
     _database_source,
 )
+
+_legacy_source = os.environ.get("PUDDINGKNOWLEDGE_LEGACY_SOURCE", "").strip()
+if _legacy_source:
+    database_shadow._DDL_PATH = Path(_legacy_source).expanduser().resolve() / "backend/scripts/refresh_vehicle_model_base.sql"
 from scripts.phase9_local_vanna_collection_shadow import run_vanna_collection_shadow
 
 

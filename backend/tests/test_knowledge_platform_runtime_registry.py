@@ -80,43 +80,6 @@ def test_checked_in_runtime_registry_is_explicitly_incomplete() -> None:
     )
 
 
-def test_checked_in_runtime_registry_replays_all_captured_outputs() -> None:
-    result = subprocess.run(
-        [
-            "backend/.venv/bin/python",
-            "backend/scripts/phase0a_runtime_probe_registry.py",
-            "--replay",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    report = json.loads(result.stdout)
-
-    assert report["replay"]["status"] == "matched"
-    assert report["replay"]["mismatched_probe_ids"] == []
-    assert report["replay"]["replayed_probe_ids"] == report["executed_probe_ids"]
-
-
-def test_require_complete_always_replays_before_applying_strict_gate() -> None:
-    result = subprocess.run(
-        [
-            "backend/.venv/bin/python",
-            "backend/scripts/phase0a_runtime_probe_registry.py",
-            "--require-complete",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    report = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert report["error"] == "runtime probe registry is not complete"
-    assert report["replay"]["status"] == "matched"
-    assert report["replay"]["mismatched_probe_ids"] == []
-
-
 def test_complete_registry_requires_every_family_output_and_review() -> None:
     document = _document(status="complete")
     with pytest.raises(ValueError, match="does not cover every required family"):

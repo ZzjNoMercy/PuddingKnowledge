@@ -31,10 +31,6 @@ class WorkspaceMaterializationResult:
 def _materialize_xls_table_bindings(temporary: Path, entry_names: tuple[str, ...]) -> None:
     """Create path-free CSV derivatives so XLS workspaces need no runtime plugin."""
 
-    try:
-        import pandas as pd
-    except ImportError as error:
-        raise PackageValidationError("XLS Workspace materialization requires the local Excel parser") from error
     assets_index = temporary / "assets/index.json"
     document = json.loads(assets_index.read_text(encoding="utf-8"))
     assets = document.get("assets", []) if isinstance(document, dict) else []
@@ -49,6 +45,10 @@ def _materialize_xls_table_bindings(temporary: Path, entry_names: tuple[str, ...
             continue
         if package_path not in entry_names:
             raise PackageValidationError("XLS asset is absent from the validated package")
+        try:
+            import pandas as pd
+        except ImportError as error:
+            raise PackageValidationError("XLS Workspace materialization requires the excel extra") from error
         try:
             frame = pd.read_excel(
                 temporary / package_path,
@@ -327,7 +327,8 @@ def _xlsx_rows(path, sheet_name):
             return result
         columns = tuple(sorted({key for row in parsed for key in row}, key=column_index))
         headers = tuple(str(parsed[0].get(column) or "").strip() for column in columns)
-        rows = [{header: row.get(column) for header, column in zip(headers, columns, strict=True) if header} for row in parsed[1:]]
+        # headers is derived one-for-one from columns; keep the portable CLI compatible with host Python 3.9.
+        rows = [{header: row.get(column) for header, column in zip(headers, columns) if header} for row in parsed[1:]]
         return headers, rows
 
 def _table_asset(row, query):

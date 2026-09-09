@@ -22,6 +22,16 @@ from knowledge_platform.package import (
 )
 
 
+def test_document_workspace_does_not_require_optional_excel_parser(tmp_path: Path, monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, 'pandas', None)
+    package_root, revision = _build(tmp_path)
+    workspace = WorkspaceMaterializer().materialize(package_root=package_root, workspace_root=tmp_path / 'workspace')
+    assert workspace.package_revision == revision
+    assert (workspace.workspace_root / 'assets/originals/asset_1.md').read_text() == 'alpha notes'
+
+
 def _asset_file(tmp_path: Path, content: bytes = b"alpha notes") -> tuple[Path, str]:
     path = tmp_path / "source.md"
     path.write_bytes(content)
@@ -151,12 +161,18 @@ def _build_csv_package(tmp_path: Path, content: bytes) -> Path:
 
 
 def _build_xlsx_package(tmp_path: Path) -> Path:
-    import pandas as pd
+    from openpyxl import Workbook
 
     source = tmp_path / "table.xlsx"
-    with pd.ExcelWriter(source) as writer:
-        pd.DataFrame([{"brand": "Pudding", "sales": 12}]).to_excel(writer, sheet_name="Jan", index=False)
-        pd.DataFrame([{"brand": "Claw", "sales": 8}]).to_excel(writer, sheet_name="Feb", index=False)
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "Jan"
+    first.append(["brand", "sales"])
+    first.append(["Pudding", 12])
+    second = workbook.create_sheet("Feb")
+    second.append(["brand", "sales"])
+    second.append(["Claw", 8])
+    workbook.save(source)
     content_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
     root = tmp_path / "xlsx-package"
     KnowledgePackageBuilder().build(

@@ -1278,48 +1278,6 @@ def test_contract_json_schemas_are_language_neutral_drafts() -> None:
     assert rehearsal_schema["properties"]["report"]["properties"]["active_revision_changed"] == {"const": False}
 
 
-def test_inventory_paths_and_catalog_tables_are_real_current_facts() -> None:
-    inventory_path = ROOT.parent / "docs" / "knowledge-platform" / "phase-0a-inventory.yaml"
-    inventory = yaml.safe_load(inventory_path.read_text(encoding="utf-8"))
-    missing = [
-        source_path
-        for item in inventory["subdomains"]
-        for source_path in item["source_paths"]
-        if not (ROOT.parent / source_path).exists()
-    ]
-    assert not missing, f"Inventory points at missing paths: {missing}"
-
-    model_source = (ROOT / "knowledge" / "models.py").read_text(encoding="utf-8")
-    current_tables = set()
-    for line in model_source.splitlines():
-        if "__tablename__" in line and "=" in line:
-            current_tables.add(line.split("=", 1)[1].strip().strip("\"'"))
-    catalog = yaml.safe_load(
-        (ROOT.parent / "docs" / "knowledge-platform" / "catalog-ownership.yaml").read_text(encoding="utf-8")
-    )
-    listed_tables = {item["table"] for item in catalog["tables"]}
-    assert listed_tables <= current_tables
-
-
-def test_skill_inventory_covers_all_phase_0a_required_skills_and_files() -> None:
-    inventory_path = ROOT.parent / "docs" / "knowledge-platform" / "skills-inventory.yaml"
-    payload = yaml.safe_load(inventory_path.read_text(encoding="utf-8"))
-    skills = {item["id"]: item for item in payload["skills"]}
-    required = set(payload["coverage"]["required_skill_ids"])
-    assert set(skills) == required
-    accepted_statuses = {
-        "classified",
-        "classified_platform_rewrite_available",
-        "classified_workspace_boundary_verified",
-    }
-    for item in skills.values():
-        assert (ROOT.parent / item["skill_file"]).is_file()
-        for auxiliary_file in item["auxiliary_files"]:
-            auxiliary_path = ROOT.parent / auxiliary_file
-            assert auxiliary_path.exists(), auxiliary_file
-        assert item["target_owner"] and item["migration"] and item["status"] in accepted_statuses
-
-
 def test_golden_baseline_registry_is_explicitly_not_claimed_as_frozen() -> None:
     baseline_path = ROOT.parent / "docs" / "knowledge-platform" / "golden-baseline.yaml"
     payload = yaml.safe_load(baseline_path.read_text(encoding="utf-8"))

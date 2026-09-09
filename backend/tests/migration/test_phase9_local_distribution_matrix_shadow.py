@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,7 +33,8 @@ def test_phase9_distribution_matrix_schema_is_valid() -> None:
 def test_phase9_distribution_matrix_runs_fail_closed_without_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(matrix, "build_package_shadow", lambda **_kwargs: _fake_shadow())
     output = tmp_path / "matrix.json"
-    result = matrix.run_shadow(output_path=output)
+    legacy_source = Path(os.environ["PUDDINGKNOWLEDGE_LEGACY_SOURCE"]).expanduser().resolve()
+    result = matrix.run_shadow(repo_root=legacy_source, output_path=output)
     assert result["status"] == matrix._PASS_STATUS
     assert result["check_count"] == 6
     assert result["pass_count"] == 6
@@ -64,7 +66,8 @@ def test_phase9_distribution_matrix_rejects_package_replay_failure(tmp_path: Pat
         staged_tree_digest="sha256:" + "b" * 64,
     )
     monkeypatch.setattr(matrix, "build_package_shadow", lambda **_kwargs: failed)
-    result = matrix.run_shadow(output_path=tmp_path / "matrix.json")
+    legacy_source = Path(os.environ["PUDDINGKNOWLEDGE_LEGACY_SOURCE"]).expanduser().resolve()
+    result = matrix.run_shadow(repo_root=legacy_source, output_path=tmp_path / "matrix.json")
     package = next(item for item in result["checks"] if item["check_id"] == "offline_platform_package_replay")
     assert result["status"] == matrix._BLOCKED_STATUS
     assert package["status"] == "blocked"

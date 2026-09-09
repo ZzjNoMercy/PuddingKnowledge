@@ -106,10 +106,9 @@ def run_audit(
         blockers: list[str] = []
         if missing_files:
             blockers.append("missing_local_model_artifacts")
-        if not result["provider_runtime"]["transformers"]:
-            blockers.append("transformers_runtime_unavailable")
-        if not result["provider_runtime"]["torch"]:
-            blockers.append("torch_runtime_unavailable")
+        # Inventory is useful without loading optional provider runtimes. Only
+        # an explicitly requested runtime is a readiness blocker; tokenizer
+        # probing separately reports a missing transformers provider.
         if required_runtime and not result["provider_runtime"].get(required_runtime, False):
             blockers.append(f"{required_runtime}_runtime_required_but_unavailable")
         tokenizer_loadable: bool | None = None

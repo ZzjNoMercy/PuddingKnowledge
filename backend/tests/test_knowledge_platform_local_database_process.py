@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 from test_knowledge_platform_local_database import DIGEST, database_config
+from test_knowledge_platform_local_runtime import _build_minimal_catalog
 
 from knowledge_platform.database import LocalVannaCollectionCandidateRebuilder
 
@@ -42,6 +43,7 @@ def _json(port, path, body=None):
 
 @pytest.mark.parametrize("launcher", [False, True], ids=["independent", "launcher"])
 def test_independent_database_and_wiki_runtime(tmp_path, launcher):
+    pytest.importorskip("asyncpg", reason="real PostgreSQL replay requires the postgres extra")
     binaries = {name: shutil.which(name) for name in ("initdb", "postgres", "psql")}
     if not all(binaries.values()):
         pytest.skip("temporary PostgreSQL binaries are unavailable")
@@ -92,7 +94,8 @@ def _replay(tmp_path, env, pgport, port, launcher):
     wiki = tmp_path / "wiki"
     wiki.mkdir()
     (wiki / "local.md").write_text("# Local wiki\ncombined runtime evidence\n")
-    catalog = ROOT / "artifacts/phase0b-local-catalog/knowledge-platform.sqlite3"
+    catalog = tmp_path / "catalog.sqlite3"
+    _build_minimal_catalog(catalog)
     before = hashlib.sha256(catalog.read_bytes()).hexdigest()
     python = os.environ.get("KNOWLEDGE_TEST_PYTHON", sys.executable)
     if "KNOWLEDGE_TEST_PYTHON" not in os.environ:

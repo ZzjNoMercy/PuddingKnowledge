@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 import pytest
 
 from knowledge_platform.baseline import build_source_snapshot
 
-ROOT = Path(__file__).resolve().parents[1]
-REGISTRY = ROOT.parent / "docs/knowledge-platform/golden-baseline.yaml"
+def _root() -> Path:
+    value = os.environ.get("PUDDINGKNOWLEDGE_LEGACY_SOURCE", "").strip()
+    if not value:
+        raise RuntimeError("PUDDINGKNOWLEDGE_LEGACY_SOURCE is required for source snapshot observations")
+    return Path(value).expanduser().resolve()
 
 
 def test_source_snapshot_covers_every_golden_registry_capability_without_raw_content() -> None:
-    snapshot = build_source_snapshot(ROOT.parent, REGISTRY)
+    root = _root()
+    snapshot = build_source_snapshot(root, root / "docs/knowledge-platform/golden-baseline.yaml")
 
     assert snapshot.repository_revision
     assert len(snapshot.capabilities) == 9
@@ -37,8 +42,10 @@ def test_source_snapshot_covers_every_golden_registry_capability_without_raw_con
 
 
 def test_source_snapshot_is_reproducible_and_rejects_unsafe_or_missing_surfaces(tmp_path: Path) -> None:
-    first = build_source_snapshot(ROOT.parent, REGISTRY)
-    second = build_source_snapshot(ROOT.parent, REGISTRY)
+    root = _root()
+    registry = root / "docs/knowledge-platform/golden-baseline.yaml"
+    first = build_source_snapshot(root, registry)
+    second = build_source_snapshot(root, registry)
     assert first.to_dict() == second.to_dict()
 
     bad_registry = tmp_path / "golden.yaml"
@@ -51,19 +58,20 @@ def test_source_snapshot_is_reproducible_and_rejects_unsafe_or_missing_surfaces(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="unsafe surface"):
-        build_source_snapshot(ROOT.parent, bad_registry)
+        build_source_snapshot(root, bad_registry)
 
 
 def test_checked_in_source_snapshot_matches_the_generator_byte_for_byte() -> None:
+    root = _root()
     result = subprocess.run(
         [
             sys.executable,
             "backend/scripts/phase0a_source_snapshot.py",
         ],
-        cwd=ROOT.parent,
+        cwd=root,
         check=True,
         capture_output=True,
     )
-    artifact = ROOT.parent / "docs/knowledge-platform/phase-0a-source-snapshot.json"
+    artifact = root / "docs/knowledge-platform/phase-0a-source-snapshot.json"
 
     assert result.stdout == artifact.read_bytes()

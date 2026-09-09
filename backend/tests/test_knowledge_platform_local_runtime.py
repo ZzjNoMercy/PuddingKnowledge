@@ -12,10 +12,76 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pytest
+from sqlalchemy import create_engine, text
 
+from knowledge_platform.catalog.migrations import migrate_to_latest
 from knowledge_platform.local.__main__ import _output_path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _build_minimal_catalog(path: Path) -> None:
+    """Create the smallest real Platform Catalog accepted by the local CLI.
+
+    The local runtime test must own its input database.  Reusing a generated
+    Phase 0B artifact would make an extracted Knowledge repository depend on
+    the source checkout's ignored files and could silently test the wrong
+    schema.  Use the target migration runner so this fixture exercises the
+    same Platform-owned schema contract as the subprocess under test.
+    """
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            migrate_to_latest(connection)
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO knowledge_spaces
+                        (id, name, description, permissions_json, created_at, updated_at)
+                    VALUES (:id, :name, :description, :permissions, :created_at, :updated_at)
+                    """
+                ),
+                {
+                    "id": "space_kb_default",
+                    "name": "Local Knowledge",
+                    "description": "Target-owned runtime fixture",
+                    "permissions": "{}",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO knowledge_datasets
+                        (id, space_id, name, version, kind, description, asset_ids,
+                         semantic_asset_ids, capabilities, freshness, permissions_json,
+                         manifest_digest, created_at, updated_at)
+                    VALUES (:id, :space_id, :name, :version, :kind, :description, :asset_ids,
+                            :semantic_asset_ids, :capabilities, :freshness, :permissions,
+                            :manifest_digest, :created_at, :updated_at)
+                    """
+                ),
+                {
+                    "id": "dataset_kb_default",
+                    "space_id": "space_kb_default",
+                    "name": "Local Knowledge",
+                    "version": "1",
+                    "kind": "wiki",
+                    "description": "Target-owned runtime fixture",
+                    "asset_ids": "[]",
+                    "semantic_asset_ids": "[]",
+                    "capabilities": "[]",
+                    "freshness": "{}",
+                    "permissions": "{}",
+                    "manifest_digest": "",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+    finally:
+        engine.dispose()
 
 
 def test_output_refuses_existing_and_symlink(tmp_path):
@@ -34,7 +100,8 @@ def test_real_local_runtime_and_failure_boundaries(tmp_path):
     env = {"PATH": os.environ["PATH"]}
     if "KNOWLEDGE_TEST_PYTHON" not in os.environ:
         env["PYTHONPATH"] = str(ROOT / "backend")
-    catalog = ROOT / "artifacts/phase0b-local-catalog/knowledge-platform.sqlite3"
+    catalog = tmp_path / "catalog.sqlite3"
+    _build_minimal_catalog(catalog)
     before = hashlib.sha256(catalog.read_bytes()).hexdigest()
     wiki = tmp_path / "wiki"
     wiki.mkdir()

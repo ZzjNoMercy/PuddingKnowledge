@@ -8,10 +8,12 @@ import pytest
 from knowledge_platform.distribution.evidence_bundle import EvidenceBundleError, build_evidence_bundle
 
 
-def test_evidence_bundle_is_deterministic_and_path_free() -> None:
-    root = Path(__file__).resolve().parents[2]
-    result = build_evidence_bundle(repo_root=root, source_revision="deadbeef")
-    replay = build_evidence_bundle(repo_root=root, source_revision="deadbeef")
+def test_evidence_bundle_is_deterministic_and_path_free(tmp_path: Path) -> None:
+    from tests._knowledge_platform_target_fixtures import write_evidence_reports
+
+    write_evidence_reports(tmp_path)
+    result = build_evidence_bundle(repo_root=tmp_path, source_revision="deadbeef")
+    replay = build_evidence_bundle(repo_root=tmp_path, source_revision="deadbeef")
 
     assert result == replay
     assert result["status"] == "LOCAL_EVIDENCE_BUNDLE_PASS_NOT_ACTIVATABLE"
@@ -32,9 +34,11 @@ def test_evidence_bundle_report_matches_schema(tmp_path: Path) -> None:
     from jsonschema import validate
 
     from scripts.phase10_evidence_bundle import run_shadow
+    from tests._knowledge_platform_target_fixtures import write_evidence_reports
 
+    write_evidence_reports(tmp_path)
     output = tmp_path / "evidence-bundle.json"
-    run_shadow(output_path=output)
+    run_shadow(repo_root=tmp_path, output_path=output, source_revision="synthetic")
     validate(
         json.loads(output.read_text(encoding="utf-8")),
         json.loads(
@@ -55,10 +59,7 @@ def test_evidence_bundle_rejects_unsafe_source_revision() -> None:
 
 
 def test_evidence_bundle_rejects_unverified_source_manifest() -> None:
-    root = Path(__file__).resolve().parents[2]
-    source = root / "artifacts/phase0b-local-catalog/phase10-local-installation-migration-real-shadow.json"
-    document = json.loads(source.read_text(encoding="utf-8"))
-    document["snapshot"]["source_manifest_verified"] = False
+    document = {"snapshot": {"source_manifest_verified": False}}
 
     with pytest.raises(EvidenceBundleError, match="verified source manifest"):
         from knowledge_platform.distribution import evidence_bundle

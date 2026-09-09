@@ -86,7 +86,9 @@ def test_rc_shadow_report_is_path_free_and_matches_schema_shape(tmp_path: Path) 
 
     from scripts.phase10_rc_validation_shadow import run_shadow
 
-    result = run_shadow(output_path=tmp_path / "rc.json")
+    from tests.test_knowledge_platform_installation_migration import _stage_report
+
+    result = run_shadow(output_path=tmp_path / "rc.json", stage_report=_stage_report(tmp_path))
     schema_path = Path(__file__).resolve().parents[2] / "docs/knowledge-platform/rc-validation-manifest.schema.json"
     validate(json.loads((tmp_path / "rc.json").read_text(encoding="utf-8")), json.loads(schema_path.read_text(encoding="utf-8")))
     serialized = json.dumps(result, ensure_ascii=False)
@@ -110,7 +112,10 @@ def test_rc_shadow_can_bind_a_real_local_prepared_manifest(tmp_path: Path) -> No
     from scripts.phase10_local_installation_migration_shadow import _initial_manifest
     from scripts.phase10_rc_validation_shadow import run_shadow
 
-    inventory = read_local_catalog_inventory(Path("artifacts/phase0b-local-catalog/local-catalog-stage-report.json"))
+    from tests.test_knowledge_platform_installation_migration import _stage_report
+
+    stage_report = _stage_report(tmp_path)
+    inventory = read_local_catalog_inventory(stage_report)
     initial = _initial_manifest(asset_count=45, collection_count=1)
     prepared = replace(
         initial,
@@ -130,7 +135,11 @@ def test_rc_shadow_can_bind_a_real_local_prepared_manifest(tmp_path: Path) -> No
     manifest_path = tmp_path / "prepared-manifest.json"
     manifest_path.write_text(json.dumps(prepared.to_dict()), encoding="utf-8")
 
-    result = run_shadow(output_path=tmp_path / "rc-real.json", migration_manifest=manifest_path)
+    result = run_shadow(
+        output_path=tmp_path / "rc-real.json",
+        migration_manifest=manifest_path,
+        stage_report=stage_report,
+    )
 
     schema_path = Path(__file__).resolve().parents[2] / "docs/knowledge-platform/rc-validation-manifest.schema.json"
     validate(json.loads((tmp_path / "rc-real.json").read_text(encoding="utf-8")), json.loads(schema_path.read_text(encoding="utf-8")))

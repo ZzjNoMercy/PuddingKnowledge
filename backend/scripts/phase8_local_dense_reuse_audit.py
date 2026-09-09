@@ -14,10 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from pymilvus import MilvusClient
-
-from scripts.phase8_local_dense_candidate import _load_inputs
-
 _ROOT = Path(__file__).resolve().parents[2]
 _OUTPUT_DIR = _ROOT / "artifacts/phase0b-local-catalog"
 _MANIFEST = _OUTPUT_DIR / "phase8-local-vector-rebuild-manifest.json"
@@ -132,8 +128,13 @@ def run_audit(
         if max_rows < 1 or max_rows > 10000:
             raise ValueError("max_rows must be between 1 and 10000")
         _require_loopback(vector_uri)
+        from scripts.phase8_local_dense_candidate import _load_inputs
+
         _, chunks = _load_inputs(manifest_path, chunks_path)
-        client = client or MilvusClient(uri=vector_uri, timeout=10)
+        if client is None:
+            from pymilvus import MilvusClient
+
+            client = MilvusClient(uri=vector_uri, timeout=10)
         description = client.describe_collection(collection_name=vector_collection)
         stats = client.get_collection_stats(collection_name=vector_collection)
         if not isinstance(stats, dict) or not isinstance(stats.get("row_count"), int):

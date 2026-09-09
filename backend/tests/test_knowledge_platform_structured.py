@@ -373,18 +373,13 @@ def test_sqlite_structured_asset_writer_persists_staged_logical_dataset(tmp_path
 
 
 def test_static_semantic_context_registry_binds_compiled_context() -> None:
-    from analytics.semantic_runtime import SemanticQueryContext
     from knowledge_platform.structured import StaticSemanticContextRegistry
+    from knowledge_platform.structured.ports import SemanticContextBinding
 
-    context = SemanticQueryContext(
-        question="sales",
-        model_id="model_sales",
-        model_version="1",
-        model_context={"data_assets": [{"asset_id": "tbl_sales"}]},
-        resolution={},
-        trace={},
+    context = SemanticContextBinding(
         context_id="semctx-sales",
-        semantic_hash="sha256:" + "b" * 64,
+        content_hash="sha256:" + "b" * 64,
+        source_asset_ids=("tbl_sales",),
     )
     registry = StaticSemanticContextRegistry([context])
     assert registry.resolve(context_id=context.context_id, content_hash=context.content_hash) is context

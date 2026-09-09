@@ -27,12 +27,14 @@ def run_shadow(
     repo_root: Path = _ROOT,
     output_path: Path = _DEFAULT_OUTPUT,
     migration_manifest: Path | None = None,
+    stage_report: Path = _INSTALLATION_OUTPUT.parent / "local-catalog-stage-report.json",
 ) -> dict[str, Any]:
     extraction = run_preflight(
         repo_root=repo_root,
         output_path=repo_root / "artifacts/phase0b-local-catalog/phase10-extraction-preflight.json",
     )["manifest"]
     installation_result = run_installation_shadow(
+        stage_report=stage_report,
         output_path=_INSTALLATION_OUTPUT,
         migration_manifest=migration_manifest,
     )

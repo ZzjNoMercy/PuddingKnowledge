@@ -21,8 +21,7 @@ from knowledge_platform.catalog import (
     VaultProviderStateProof,
     run_vault_rebind_rehearsal_with_rollback_probes,
 )
-from provider_registry import LocalCredentialStore
-from runtime_identity.profiles import CredentialVault
+from knowledge_platform.local.vault import CredentialVault, LocalCredentialStore
 
 
 def _verify_factory(proof_key: bytes):
@@ -34,8 +33,10 @@ def _verify_factory(proof_key: bytes):
 
 
 def run(output: Path) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="puddingclaw-local-vault-shadow-") as temp_root:
-        root = Path(temp_root)
+    with tempfile.TemporaryDirectory(prefix="puddingknowledge-local-vault-shadow-") as temp_root:
+        # tempfile may expose the macOS /var alias; pass the canonical,
+        # explicitly-created shadow home through the vault symlink boundary.
+        root = Path(temp_root).resolve()
         store = LocalCredentialStore(root, owner_user_id="local-vault-shadow")
         isolated_vault_key = hashlib.sha256(b"phase7-local-vault-shadow-key").digest()
         store.vault = CredentialVault(isolated_vault_key)

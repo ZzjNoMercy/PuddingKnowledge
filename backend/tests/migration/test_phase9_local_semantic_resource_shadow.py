@@ -1,12 +1,14 @@
+import os
 from pathlib import Path
 
 
 def test_phase9_local_semantic_resource_shadow_is_non_activating(tmp_path: Path) -> None:
     from scripts.phase9_local_semantic_resource_shadow import run_shadow
 
+    legacy_source = Path(os.environ["PUDDINGKNOWLEDGE_LEGACY_SOURCE"]).expanduser().resolve()
     report = run_shadow(
-        catalog_path=Path("artifacts/phase0b-local-catalog/knowledge-platform.sqlite3"),
-        wiki_root=Path("/Users/pet/Documents/knowledge/llm-wiki/wiki"),
+        catalog_path=legacy_source / "artifacts/phase0b-local-catalog/knowledge-platform.sqlite3",
+        wiki_root=legacy_source / "wiki",
         output_path=tmp_path / "semantic-resource-report.json",
     )
     assert report["status"] == "PHASE9_LOCAL_SEMANTIC_RESOURCE_SHADOW_PASS_NOT_ACTIVATABLE"

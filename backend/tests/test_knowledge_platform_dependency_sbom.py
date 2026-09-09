@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,9 @@ def test_dependency_sbom_shadow_is_deterministic_and_non_releaseable() -> None:
 
     assert result.status == "PHASE10_DEPENDENCY_SBOM_SHADOW_PASS_NOT_ACTIVATABLE"
     assert result.to_dict() == replay.to_dict()
-    assert result.python_component_count > 300
+    lock = tomllib.loads((root / "backend/uv.lock").read_text(encoding="utf-8"))
+    expected_python_components = len({(item["name"], item["version"]) for item in lock["package"]})
+    assert result.python_component_count == expected_python_components
     assert result.node_component_count == 4
     assert result.node_manifests_dependency_free is True
     assert result.replay_consistent is True
@@ -29,9 +32,9 @@ def test_dependency_sbom_shadow_is_deterministic_and_non_releaseable() -> None:
     assert len(result.sbom["components"]) == result.python_component_count + result.node_component_count
     assert len(result.sbom["dependencies"]) == len(result.sbom["components"])
     assert all(item["ref"] for item in result.sbom["dependencies"])
-    accelerate = next(item for item in result.sbom["components"] if item["name"] == "accelerate")
-    assert accelerate["hashes"]
-    assert all(item["alg"] == "SHA-256" for item in accelerate["hashes"])
+    hashed_components = [item for item in result.sbom["components"] if item.get("hashes")]
+    assert hashed_components
+    assert all(hash_item["alg"] == "SHA-256" for item in hashed_components for hash_item in item["hashes"])
     assert "/Users/" not in json.dumps(document)
     assert "file://" not in json.dumps(document)
 

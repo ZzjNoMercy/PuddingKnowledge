@@ -81,3 +81,12 @@ Knowledge 已把真实 Table Query / Logical Authoring / durable Processing 接�
 
 
 前端最终清单更正：原 582 个文件统计包含其他端口的 `.next-*` 缓存，不能作为纯交付源码数量。已修复 staging 为排除全部 `.next-*` 目录，新增不同端口反例；新独立 npm ci / tsc / Next build 通过，实际 258 个源码文件、11 个 overlay、0 个缓存交付文件，逐项摘要核对通过。以 `artifacts/repository-split/harness-frontend-build-round2.json` 和 `/private/tmp/puddingharness-frontend-stage-round13/harness-frontend-artifact-manifest.json` 为准。
+
+
+2026-09-10 Independent target acceptance checkpoint
+
+The Knowledge target now owns its locked backend dependencies, independent encrypted credential store, runtime staging metadata, CI commands, generated test Catalogs and Console build fixtures. Legacy source observers require an explicit external fixture under backend/tests/migration and are excluded from default traversal. The standalone contract test omitted by the original path filter was restored verbatim (SHA-256 286817441579b7c07f27dc41320bff506aa48350db43dea5a3682b467800eece).
+
+The phase-gate manifest no longer inherits verified claims whose source inventory, Vanna provenance or source shadow artifact is absent in this target. They remain blocked. The existing provider-neutral Phase 0C claims still execute their checks; changed-evidence and failed-check rejection remain tested. This correction does not activate production.
+
+The next runtime gap is explicit: deploy --apply currently stages metadata, while puddingknowledge-local runs only explicit local snapshots. A separately owned local start/status/stop supervisor, actual endpoint health, restart/crash recovery and executable stateful upgrade/rollback remain to implement and verify. Full Processing/Authoring and production authentication are also not yet accepted.

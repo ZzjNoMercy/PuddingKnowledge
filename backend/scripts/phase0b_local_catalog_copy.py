@@ -24,7 +24,6 @@ from sqlalchemy import MetaData, Table, create_engine, func, inspect, select
 
 from knowledge_platform.catalog import run_catalog_migration_rehearsal
 from knowledge_platform.catalog.connector_rehearsal import _physical_path_references
-from runtime_identity.paths import PuddingClawPaths
 
 _REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "knowledge_documents": ("source_path", "storage_path"),
@@ -438,6 +437,11 @@ def stage_local_catalog(
 
 
 def main() -> int:
+    # The reusable local SQLite fence is Platform-owned and must remain
+    # importable without the legacy Harness runtime.  The legacy Home path
+    # adapter is only needed by the CLI entry point.
+    from runtime_identity.paths import PuddingClawPaths
+
     paths = PuddingClawPaths.from_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=paths.databases() / "catalog.sqlite3")

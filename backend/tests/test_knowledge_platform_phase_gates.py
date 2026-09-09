@@ -144,17 +144,17 @@ def test_changed_evidence_content_blocks_readiness(tmp_path: Path) -> None:
     _block_all_requirements(document)
     source = ROOT.parent
     for reference in (
-        "docs/knowledge-platform/phase-0a-inventory.yaml",
-        "backend/tests/test_phase0a_dependency_inventory.py",
+        "docs/knowledge-platform/phase-0c-boundaries.md",
+        "backend/tests/test_knowledge_platform_boundaries.py",
     ):
         target = tmp_path / reference
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / reference, target)
-    document["phases"]["phase_0a"]["file_inventory_complete"] = yaml.safe_load(
-        yaml.safe_dump(yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))["phases"]["phase_0a"]["file_inventory_complete"])
+    document["phases"]["phase_0c"]["static_dependency_boundary_verified"] = yaml.safe_load(
+        yaml.safe_dump(yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))["phases"]["phase_0c"]["static_dependency_boundary_verified"])
     )
-    document["phases"]["phase_0a"]["file_inventory_complete"]["evidence_sha256"][
-        "docs/knowledge-platform/phase-0a-inventory.yaml"
+    document["phases"]["phase_0c"]["static_dependency_boundary_verified"]["evidence_sha256"][
+        "docs/knowledge-platform/phase-0c-boundaries.md"
     ] = "0" * 64
     report = evaluate_phase_gates(_write_temp_manifest(document, tmp_path), run_checks=False)
     assert any("evidence hash mismatch" in blocker for blocker in report.blockers)

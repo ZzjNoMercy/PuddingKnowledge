@@ -13,56 +13,6 @@ from knowledge_platform.distribution import (
 )
 
 
-def test_phase10_extraction_preflight_is_explicitly_non_executable() -> None:
-    manifest = build_phase10_extraction_manifest(repo_root=Path(__file__).resolve().parents[2])
-    replay = build_phase10_extraction_manifest(repo_root=Path(__file__).resolve().parents[2])
-
-    assert manifest.status == "PHASE10_EXTRACTION_PREFLIGHT_NOT_EXECUTABLE"
-    assert manifest.executable is False
-    assert manifest.activation_allowed is False
-    assert manifest.extraction_method == "git-filter-repo"
-    assert manifest.target_repositories == ("puddingknowledge", "puddingharness")
-    assert manifest.source_tag_signed is False
-    assert manifest.extraction_tool_version is None
-    assert dict(manifest.component_versions)["platform_catalog_schema"] == "v12"
-    assert dict(manifest.component_versions)["harness_catalog_schema"] == "v1"
-    assert dict(manifest.component_versions)["platform_rest_api"] == "v1"
-    assert dict(manifest.component_versions)["platform_mcp_protocol"] == "2025-06-18"
-    assert dict(manifest.component_versions)["knowledge_package"] == "agent-knowledge-package/v1"
-    assert dict(manifest.component_versions)["knowledge_package_sbom"] == "CycloneDX/1.5"
-    assert len(dict(manifest.artifact_digests)["extraction_path_plan"]) == 64
-    assert len(dict(manifest.artifact_digests)["mixed_file_plan"]) == 64
-    assert len(dict(manifest.artifact_digests)["dependency_sbom"]) == 64
-    assert "signed_source_tag_missing_or_unverified" in manifest.unresolved_gates
-    assert "git_filter_repo_tool_unavailable" in manifest.unresolved_gates
-    assert "backend/graph/deepagents_manager.py" in manifest.mixed_file_paths
-    assert len(manifest.mixed_file_paths) == 23
-    assert len(manifest.mixed_file_plans) == 23
-    assert all(plan.action == "manual" and plan.target == "shared-review" for plan in manifest.mixed_file_plans)
-    assert all(plan.exclude for plan in manifest.mixed_file_plans)
-    router = next(plan for plan in manifest.mixed_file_plans if plan.path.endswith("tool_intent_router.py"))
-    assert router.preserve == ()
-    assert router.exclude == ("entire ToolIntentRouter middleware",)
-    for path in ("backend/knowledge/**", "backend/analytics/**", "backend/vanna/**"):
-        plan = next(plan for plan in manifest.path_plans if plan.path == path)
-        assert (plan.action, plan.target) == ("preserve-legacy", "PuddingClaw")
-    assert any("dependency groups" in plan.rule for plan in manifest.mixed_file_plans)
-    assert "backend/graph/middlewares/tool_intent_router.py" in manifest.mixed_file_paths
-    assert "backend/prompts/tool_guides/knowledge-retrieval.md" in manifest.mixed_file_paths
-    assert "frontend/src/app/analytics/page.tsx" in manifest.mixed_file_paths
-    assert manifest.unresolved_gates
-    assert not any(item.startswith("path_plan_anchor_missing:") for item in manifest.unresolved_gates)
-    assert dict(manifest.phase_gate_statuses)["phase_0a"] == "blocked"
-    assert dict(manifest.phase_gate_statuses)["phase_0c"] == "ready"
-    assert "phase_0a.golden_baseline_frozen is blocked" in manifest.phase_gate_blockers
-    assert "phase_0b.production_catalog_copy_verified is blocked" in manifest.phase_gate_blockers
-    assert not any("evidence hash mismatch" in blocker for blocker in manifest.phase_gate_blockers)
-    assert "source_worktree_not_clean" in manifest.unresolved_gates
-    assert manifest.source_revision
-    assert manifest.to_dict() == replay.to_dict()
-    assert len(manifest.canonical_digest()) == 64
-
-
 def test_phase10_extraction_preflight_rejects_absolute_or_unknown_targets() -> None:
     with pytest.raises(ExtractionPreflightError):
         ExtractionPathPlan("/tmp/source", "manual", "shared-review", "review")
@@ -72,28 +22,6 @@ def test_phase10_extraction_preflight_rejects_absolute_or_unknown_targets() -> N
         ExtractionPathPlan(r"\\server\share\file.py", "manual", "shared-review", "review")
     with pytest.raises(ExtractionPreflightError):
         ExtractionPathPlan("backend/config.py", "extract", "puddingharness", "review")
-
-
-def test_phase10_preflight_report_contains_no_host_paths(tmp_path: Path) -> None:
-    from scripts.phase10_extraction_preflight import run_preflight
-
-    output = tmp_path / "preflight.json"
-    result = run_preflight(output_path=output)
-    payload = output.read_text(encoding="utf-8")
-
-    assert result["status"] == "PHASE10_EXTRACTION_PREFLIGHT_NOT_EXECUTABLE"
-    assert '"source_worktree_clean": false' in payload
-    assert '"missing_mixed_file_paths": []' in payload
-    assert '"phase_gate_statuses"' in payload
-    assert '"phase_gate_blockers"' in payload
-    assert '"artifact_digests"' in payload
-    assert '"mixed_file_plans"' in payload
-    assert '"preserve"' in payload
-    assert '"exclude"' in payload
-    assert '"replay_consistent": true' in payload
-    assert '"manifest_digest"' in payload
-    assert "/Users/" not in payload
-    assert "file://" not in payload
 
 
 def test_phase10_extraction_manifest_matches_versioned_schema(tmp_path: Path) -> None:

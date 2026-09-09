@@ -31,8 +31,22 @@ def _source_revision(repo_root: Path) -> str:
     return revision
 
 
-def run_shadow(*, repo_root: Path = _ROOT, output_path: Path = _DEFAULT_OUTPUT) -> dict[str, object]:
-    payload = build_evidence_bundle(repo_root=repo_root, source_revision=_source_revision(repo_root))
+def run_shadow(
+    *,
+    repo_root: Path = _ROOT,
+    output_path: Path = _DEFAULT_OUTPUT,
+    source_revision: str | None = None,
+) -> dict[str, object]:
+    """Write the bundle for a checkout, with an explicit test revision escape hatch.
+
+    Production callers keep the Git-derived revision.  Target-only tests may
+    build a synthetic evidence checkout in a temporary directory without
+    manufacturing a source repository or importing the legacy project.
+    """
+    payload = build_evidence_bundle(
+        repo_root=repo_root,
+        source_revision=_source_revision(repo_root) if source_revision is None else source_revision,
+    )
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

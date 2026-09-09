@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -15,21 +14,58 @@ from knowledge_platform.semantic.crosswalk_collision_decision import (
 )
 from knowledge_platform.semantic.crosswalk_collision_review import load_crosswalk_collision_review_queue
 from knowledge_platform.semantic.vehicle_series import find_vehicle_series_canonical_collisions
-from scripts.phase7_crosswalk_collision_review_queue import build_review_queue
 
 
-def _queue(tmp_path: Path) -> dict:
-    root = Path(__file__).resolve().parents[2]
-    report = build_review_queue(
-        report_path=root / "artifacts/phase0b-local-catalog/phase7-local-crosswalk-real/phase7-local-crosswalk-real-canonical-shadow-report.json",
-        output_path=tmp_path / "queue.json",
-    )
-    load_crosswalk_collision_review_queue(report)
-    return report
+def _queue() -> dict:
+    """Build a small deterministic queue instead of reading a source artifact.
+
+    These tests exercise the target decision protocol.  The real Phase 7
+    shadow report is migration evidence and is intentionally not a fixture of
+    the extracted repository.
+    """
+
+    canonical_rows = [
+        {"brand": f"Brand {index}", "serial_name": f"Series {index}"}
+        for index in range(7)
+        for _ in (0, 1)
+    ]
+    for index in range(7):
+        canonical_rows[index * 2 + 1]["serial_name"] = f"Series{index}"
+    collisions = find_vehicle_series_canonical_collisions(canonical_rows)
+    queue_items = []
+    for collision in collisions:
+        item = {
+            "candidate_count": 2,
+            "candidate_digests": sorted(collision["candidate_digests"]),
+            "decision_status": "pending",
+            "normalized_key_digest": "sha256:" + hashlib.sha256(
+                str(collision["normalized_key"]).encode("utf-8")
+            ).hexdigest(),
+        }
+        item["review_id"] = "sha256:" + hashlib.sha256(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        queue_items.append(item)
+    queue = {
+        "format": "agent-knowledge-platform-crosswalk-collision-review-queue/v1",
+        "status": "PHASE7_CROSSWALK_COLLISION_REVIEW_REQUIRED_NOT_ACTIVATABLE",
+        "activation": "not-activated",
+        "execution_allowed": False,
+        "policy": "test",
+        "canonical_source": {
+            "content_digest": "sha256:" + "1" * 64,
+            "identity_basis": ["brand", "serial_name"],
+            "stable_identity_columns": [],
+        },
+        "summary": {"approval_required": True, "collision_count": len(queue_items), "pending_review_count": len(queue_items)},
+        "items": queue_items,
+    }
+    load_crosswalk_collision_review_queue(queue)
+    return queue
 
 
-def test_prepare_crosswalk_collision_decision_requires_all_explicit_candidates(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+def test_prepare_crosswalk_collision_decision_requires_all_explicit_candidates() -> None:
+    queue = _queue()
     selections = [
         {"review_id": item["review_id"], "candidate_digest": item["candidate_digests"][0]}
         for item in queue["items"]
@@ -43,8 +79,8 @@ def test_prepare_crosswalk_collision_decision_requires_all_explicit_candidates(t
     load_crosswalk_collision_decision(candidate)
 
 
-def test_prepare_rejects_missing_unknown_or_unlisted_selection(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+def test_prepare_rejects_missing_unknown_or_unlisted_selection() -> None:
+    queue = _queue()
     selections = [
         {"review_id": item["review_id"], "candidate_digest": item["candidate_digests"][0]}
         for item in queue["items"][:-1]
@@ -62,8 +98,8 @@ def test_prepare_rejects_missing_unknown_or_unlisted_selection(tmp_path: Path) -
         prepare_crosswalk_collision_decision(queue, selections)
 
 
-def test_decision_candidate_count_is_data_driven(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+def test_decision_candidate_count_is_data_driven() -> None:
+    queue = _queue()
     reduced = copy.deepcopy(queue)
     reduced["items"] = reduced["items"][:1]
     reduced["summary"] = {"approval_required": True, "collision_count": 1, "pending_review_count": 1}
@@ -75,8 +111,8 @@ def test_decision_candidate_count_is_data_driven(tmp_path: Path) -> None:
     load_crosswalk_collision_decision(decision)
 
 
-def test_load_rejects_tampered_decision_candidate(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+def test_load_rejects_tampered_decision_candidate() -> None:
+    queue = _queue()
     selections = [
         {"review_id": item["review_id"], "candidate_digest": item["candidate_digests"][0]}
         for item in queue["items"]
@@ -138,12 +174,7 @@ def test_resolve_policy_recaptures_current_collision_set() -> None:
 
 
 def test_resolve_policy_rejects_canonical_collision_drift() -> None:
-    root = Path(__file__).resolve().parents[2]
-    queue = json.loads(
-        (root / "artifacts/phase0b-local-catalog/phase7-local-crosswalk-real/crosswalk-collision-review-queue.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    queue = _queue()
     selections = [
         {"review_id": item["review_id"], "candidate_digest": item["candidate_digests"][0]}
         for item in queue["items"]

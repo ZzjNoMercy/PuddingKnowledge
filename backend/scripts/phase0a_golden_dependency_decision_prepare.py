@@ -89,6 +89,7 @@ def prepare_candidate(
     output_path: Path,
     review_id: str,
     decision: str,
+    observation: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     queue_path = _safe_absolute(queue_path, label="queue")
     canonical_path = _safe_absolute(canonical_path, label="canonical")
@@ -106,7 +107,7 @@ def prepare_candidate(
         raise ValueError("canonical Golden record is invalid")
     if queue["items"][0]["canonical_record_sha256"] != _sha256_file(canonical_path):
         raise ValueError("Golden decision queue canonical record is stale")
-    observation = _capture_observation()
+    observation = _capture_observation() if observation is None else observation
     current_include_candidate = _capture(
         decision="include_observer", source_revision=str(canonical["source_revision"]), observation=observation
     )

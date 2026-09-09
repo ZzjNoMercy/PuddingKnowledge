@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from pymilvus import DataType, MilvusClient
-
 from knowledge_platform.catalog.vector_rebuild import (
     VectorEmbeddingRow,
     VectorRebuildChunk,
@@ -29,6 +27,30 @@ _DEFAULT_CHUNKS = _DEFAULT_OUTPUT_DIR / "phase8-local-vector-chunks.json"
 _COLLECTION = "puddingclaw_platform_candidate_text"
 _DEFAULT_KEY_ENV = "PUDDINGCLAW_PLATFORM_EMBEDDING_API_KEY"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+MilvusClient = None
+
+
+def _milvus_client(*, uri: str, timeout: int) -> Any:
+    """Load the optional Milvus provider only when a real client is needed."""
+
+    global MilvusClient
+    if MilvusClient is None:
+        try:
+            from pymilvus import MilvusClient as client_type
+        except ModuleNotFoundError as error:
+            raise RuntimeError("optional provider pymilvus is required for a Milvus candidate") from error
+        MilvusClient = client_type
+    return MilvusClient(uri=uri, timeout=timeout)
+
+
+def _milvus_data_type(name: str) -> Any:
+    """Resolve a provider enum lazily; symbolic values keep injected fakes unit-testable."""
+
+    try:
+        from pymilvus import DataType
+    except ModuleNotFoundError:
+        return name
+    return getattr(DataType, name)
 
 
 def _validate_local_endpoint(endpoint: str) -> str:
@@ -113,15 +135,15 @@ def _load_inputs(manifest_path: Path, chunks_path: Path) -> tuple[VectorRebuildM
 
 def _create_schema(client: Any, dimension: int) -> Any:
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
-    schema.add_field(field_name="id", datatype=DataType.VARCHAR, max_length=255, is_primary=True)
-    schema.add_field(field_name="doc_id", datatype=DataType.VARCHAR, max_length=255)
-    schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+    schema.add_field(field_name="id", datatype=_milvus_data_type("VARCHAR"), max_length=255, is_primary=True)
+    schema.add_field(field_name="doc_id", datatype=_milvus_data_type("VARCHAR"), max_length=255)
+    schema.add_field(field_name="text", datatype=_milvus_data_type("VARCHAR"), max_length=65535)
     # Keep the provenance carried by VectorEmbeddingRow explicit in the
     # candidate schema.  Dynamic fields stay disabled so an insert cannot
     # silently drop or accept unreviewed row attributes.
-    schema.add_field(field_name="content_digest", datatype=DataType.VARCHAR, max_length=72)
-    schema.add_field(field_name="source_revision", datatype=DataType.VARCHAR, max_length=255)
-    schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=dimension)
+    schema.add_field(field_name="content_digest", datatype=_milvus_data_type("VARCHAR"), max_length=72)
+    schema.add_field(field_name="source_revision", datatype=_milvus_data_type("VARCHAR"), max_length=255)
+    schema.add_field(field_name="embedding", datatype=_milvus_data_type("FLOAT_VECTOR"), dim=dimension)
     return schema
 
 
@@ -202,7 +224,7 @@ def run_shadow(
                 }
             )
             return result
-        client = client or MilvusClient(uri=milvus_uri, timeout=10)
+        client = client or _milvus_client(uri=milvus_uri, timeout=10)
         if client.has_collection(collection_name=_COLLECTION):
             result["error_type"] = "CandidateCollectionAlreadyExists"
             result["status"] = "PHASE8_LOCAL_DENSE_CANDIDATE_BLOCKED_EXISTING_COLLECTION"

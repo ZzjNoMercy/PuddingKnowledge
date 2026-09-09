@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -60,36 +58,6 @@ def test_legacy_registry_strict_review_requires_current_replay_evidence() -> Non
                 "skipped_probe_ids": [],
             },
         )
-
-
-def test_checked_in_legacy_registry_replays_all_observers() -> None:
-    result = subprocess.run(
-        [
-            "backend/.venv/bin/python",
-            "backend/scripts/phase0a_legacy_runtime_probe_registry.py",
-            "--replay",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    report = json.loads(result.stdout)
-
-    assert report["replay"]["status"] == "matched"
-    assert report["replay"]["mismatched_probe_ids"] == []
-    assert report["replay"]["skipped_probe_ids"] == []
-    assert report["replay"]["replayed_probe_ids"] == report["executed_probe_ids"]
-    assert set(report["replay"]["run_counts"].values()) == {2}
-
-
-def test_connector_observer_restores_knowledge_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from scripts import phase0a_connectors_capture_observer as observer
-
-    original = str(tmp_path / "caller-knowledge")
-    monkeypatch.setenv("PUDDINGCLAW_KNOWLEDGE_DIR", original)
-    observer.observe()
-    assert observer.os.environ["PUDDINGCLAW_KNOWLEDGE_DIR"] == original
 
 
 def test_legacy_registry_rejects_missing_output(tmp_path: Path) -> None:

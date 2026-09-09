@@ -15,7 +15,7 @@ From the repository root, choose a new staging path:
 
 ```bash
 python3 packages/knowledge-platform-runtime/stage.py --output /private/tmp/knowledge-install
-uv sync --project /private/tmp/knowledge-install --locked --no-editable
+uv sync --project /private/tmp/knowledge-install --locked --no-editable --no-dev
 /private/tmp/knowledge-install/.venv/bin/puddingknowledge-local --help
 ```
 
@@ -51,7 +51,7 @@ and termination cleanup.
 Install the optional adapter in the independent tree:
 
 ```bash
-uv sync --project /private/tmp/knowledge-install --locked --no-editable --extra postgres
+uv sync --project /private/tmp/knowledge-install --locked --no-editable --no-dev --extra postgres
 ```
 
 Copy `database.example.json` to a host-local file and supply your explicit local
@@ -127,3 +127,5 @@ entries; an ID owned by another source is rejected. An active listener still
 blocks startup before creating output. Sources must use canonical absolute paths
 on macOS (for example `/private/tmp`, not the `/tmp` symlink); arbitrary symlink
 components remain rejected.
+
+The extracted repository uses backend/pyproject.toml and backend/uv.lock as its authoritative runtime metadata. stage.py copies those exact files and the two owned modules into a flat install tree. The package-local manifests are historical extraction inputs. Use the excel extra for XLS/Excel provider parsing; pure Markdown/CSV Workspace materialization does not require pandas.

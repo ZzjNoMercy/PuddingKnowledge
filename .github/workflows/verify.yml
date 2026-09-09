@@ -1,0 +1,34 @@
+name: Independent repository checks
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - run: uv sync --locked --no-editable --all-extras
+        working-directory: backend
+      - run: uv run --no-sync python -m pytest -q
+        working-directory: backend
+  frontend-and-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci && npm test && npm run build
+        working-directory: packages/knowledge-platform-web
+      - run: npm run build && npm test
+        working-directory: packages/knowledge-platform-console
+      - run: npm test
+        working-directory: packages/knowledge-platform-console-contracts
+      - run: npm test
+        working-directory: packages/knowledge-platform-deploy-cli
+      - run: npm test
+        working-directory: packages/knowledge-platform-skills

@@ -9,19 +9,15 @@ import pytest
 from scripts.phase0a_golden_dependency_decision_prepare import prepare_candidate
 
 
-def _inputs(root: Path) -> tuple[Path, Path, str]:
-    queue = json.loads((root / "artifacts/phase0a/golden-dependency-review-queue.json").read_text(encoding="utf-8"))
-    return (
-        root / "artifacts/phase0a/golden-dependency-review-queue.json",
-        root / "docs/knowledge-platform/golden-records/connectors_and_capture.json",
-        str(queue["items"][0]["review_id"]),
-    )
+def _inputs(root: Path) -> tuple[Path, Path, str, dict[str, object]]:
+    from tests._knowledge_platform_target_fixtures import golden_dependency_inputs
+
+    return golden_dependency_inputs(root)
 
 
 @pytest.mark.parametrize("decision", ["include_observer", "exclude_observer"])
 def test_explicit_golden_decision_writes_candidate_only(tmp_path: Path, decision: str) -> None:
-    root = Path(__file__).resolve().parents[2]
-    queue, canonical, review_id = _inputs(root)
+    queue, canonical, review_id, observation = _inputs(tmp_path)
     output = tmp_path / f"{decision}.json"
     result = prepare_candidate(
         queue_path=queue,
@@ -29,6 +25,7 @@ def test_explicit_golden_decision_writes_candidate_only(tmp_path: Path, decision
         output_path=output,
         review_id=review_id,
         decision=decision,
+        observation=observation,
     )
     assert result["decision"] == decision
     assert result["canonical_unchanged"] is True
@@ -37,8 +34,7 @@ def test_explicit_golden_decision_writes_candidate_only(tmp_path: Path, decision
 
 
 def test_explicit_golden_decision_rejects_unknown_review_id(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
-    queue, canonical, _ = _inputs(root)
+    queue, canonical, _, observation = _inputs(tmp_path)
     with pytest.raises(ValueError, match="review ID"):
         prepare_candidate(
             queue_path=queue,
@@ -46,12 +42,12 @@ def test_explicit_golden_decision_rejects_unknown_review_id(tmp_path: Path) -> N
             output_path=tmp_path / "candidate.json",
             review_id="sha256:" + "0" * 64,
             decision="include_observer",
+            observation=observation,
         )
 
 
 def test_explicit_golden_decision_rejects_stale_canonical(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
-    queue, canonical, review_id = _inputs(root)
+    queue, canonical, review_id, observation = _inputs(tmp_path)
     stale = tmp_path / "canonical.json"
     shutil.copyfile(canonical, stale)
     stale.write_text(stale.read_text(encoding="utf-8") + "\n", encoding="utf-8")
@@ -62,4 +58,5 @@ def test_explicit_golden_decision_rejects_stale_canonical(tmp_path: Path) -> Non
             output_path=tmp_path / "candidate.json",
             review_id=review_id,
             decision="include_observer",
+            observation=observation,
         )

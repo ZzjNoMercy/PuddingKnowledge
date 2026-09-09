@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +19,39 @@ from knowledge_platform.distribution import (
 )
 
 _DIGEST = "sha256:" + "1" * 64
+
+
+def _stage_report(tmp_path: Path) -> Path:
+    """Build the smallest real target Catalog stage used by migration shadows."""
+
+    stage = tmp_path / "catalog-stage"
+    stage.mkdir()
+    database = stage / "knowledge-platform.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(
+            "CREATE TABLE knowledge_assets (id TEXT PRIMARY KEY);"
+            "CREATE TABLE knowledge_datasets (id TEXT PRIMARY KEY);"
+        )
+        connection.executemany("INSERT INTO knowledge_assets(id) VALUES (?)", [(f"asset_{i:02d}",) for i in range(45)])
+        connection.execute("INSERT INTO knowledge_datasets(id) VALUES (?)", ("dataset_kb_default",))
+        connection.commit()
+    finally:
+        connection.close()
+    digest = "sha256:" + hashlib.sha256(database.read_bytes()).hexdigest()
+    report = {
+        "format": "agent-knowledge-platform-local-catalog-stage/v1",
+        "targets": {
+            "platform": {
+                "table_counts": {"knowledge_assets": 45, "knowledge_datasets": 1},
+                "files": {"knowledge-platform.sqlite3": {"sha256": digest}},
+                "sha256": digest,
+            }
+        },
+    }
+    report_path = stage / "local-catalog-stage-report.json"
+    report_path.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+    return report_path
 
 
 def _manifest() -> InstallationMigrationManifest:
@@ -274,7 +309,7 @@ def test_schema_declares_versioned_manifest_contract() -> None:
 def test_local_installation_shadow_uses_current_local_catalog_counts(tmp_path: Path) -> None:
     from scripts.phase10_local_installation_migration_shadow import run_shadow
 
-    result = run_shadow(output_path=tmp_path / "migration-shadow.json")
+    result = run_shadow(stage_report=_stage_report(tmp_path), output_path=tmp_path / "migration-shadow.json")
     assert result["status"] == "PHASE10_INSTALLATION_MIGRATION_SHADOW_PASS_NOT_ACTIVATABLE"
     assert result["local_stage_counts"] == {"assets": 45, "collections": 1}
     assert result["state_sequence"] == ["DISCOVERED", "PREPARED", "CUTOVER", "ROLLED_BACK"]
@@ -298,10 +333,10 @@ def test_local_installation_shadow_uses_current_local_catalog_counts(tmp_path: P
     assert result["source_home_changed"] is False
 
 
-def test_local_installation_shadow_inventory_uses_real_staged_catalog_ids() -> None:
+def test_local_installation_shadow_inventory_uses_real_staged_catalog_ids(tmp_path: Path) -> None:
     from scripts.phase10_local_installation_migration_shadow import _stage_object_ids
 
-    stage_report = Path("artifacts/phase0b-local-catalog/local-catalog-stage-report.json")
+    stage_report = _stage_report(tmp_path)
     object_ids, database_digest = _stage_object_ids(stage_report, stage_assets=45, stage_collections=1)
 
     assert len(object_ids) == 46
@@ -315,7 +350,7 @@ def test_local_installation_shadow_can_bind_a_verified_prepared_manifest(tmp_pat
     from knowledge_platform.distribution.local_catalog_inventory import read_local_catalog_inventory
     from scripts.phase10_local_installation_migration_shadow import _initial_manifest, run_shadow
 
-    stage_report = Path("artifacts/phase0b-local-catalog/local-catalog-stage-report.json")
+    stage_report = _stage_report(tmp_path)
     inventory = read_local_catalog_inventory(stage_report)
     initial = _initial_manifest(asset_count=45, collection_count=1)
     prepared = replace(
@@ -340,6 +375,7 @@ def test_local_installation_shadow_can_bind_a_verified_prepared_manifest(tmp_pat
     manifest_path.write_text(json.dumps(prepared.to_dict()), encoding="utf-8")
 
     result = run_shadow(
+        stage_report=stage_report,
         migration_manifest=manifest_path,
         output_path=tmp_path / "migration-shadow.json",
     )
@@ -365,7 +401,11 @@ def test_local_installation_shadow_rejects_manifest_with_unknown_fields(tmp_path
     manifest_path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="schema validation"):
-        run_shadow(migration_manifest=manifest_path, output_path=tmp_path / "migration-shadow.json")
+        run_shadow(
+            stage_report=_stage_report(tmp_path),
+            migration_manifest=manifest_path,
+            output_path=tmp_path / "migration-shadow.json",
+        )
 
 
 def test_local_installation_shadow_rejects_same_count_with_wrong_catalog_digest(tmp_path: Path) -> None:
@@ -386,4 +426,8 @@ def test_local_installation_shadow_rejects_same_count_with_wrong_catalog_digest(
     manifest_path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="database digest"):
-        run_shadow(migration_manifest=manifest_path, output_path=tmp_path / "migration-shadow.json")
+        run_shadow(
+            stage_report=_stage_report(tmp_path),
+            migration_manifest=manifest_path,
+            output_path=tmp_path / "migration-shadow.json",
+        )

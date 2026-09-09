@@ -14,9 +14,8 @@ from scripts.phase7_crosswalk_collision_review_queue import build_review_queue
 
 
 def test_real_crosswalk_collision_queue_is_path_free_and_pending(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
     report = build_review_queue(
-        report_path=root / "artifacts/phase0b-local-catalog/phase7-local-crosswalk-real/phase7-local-crosswalk-real-canonical-shadow-report.json",
+        report_path=_report_path(tmp_path),
         output_path=tmp_path / "queue.json",
     )
     text = (tmp_path / "queue.json").read_text(encoding="utf-8")
@@ -28,9 +27,8 @@ def test_real_crosswalk_collision_queue_is_path_free_and_pending(tmp_path: Path)
 
 
 def test_crosswalk_collision_queue_rejects_tampered_review_id(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
     report = build_review_queue(
-        report_path=root / "artifacts/phase0b-local-catalog/phase7-local-crosswalk-real/phase7-local-crosswalk-real-canonical-shadow-report.json",
+        report_path=_report_path(tmp_path),
         output_path=tmp_path / "queue.json",
     )
     tampered = copy.deepcopy(report)
@@ -49,8 +47,40 @@ def test_crosswalk_collision_queue_count_is_data_driven(tmp_path: Path) -> None:
 
 
 def _queue_report(tmp_path: Path) -> dict:
-    root = Path(__file__).resolve().parents[2]
     return build_review_queue(
-        report_path=root / "artifacts/phase0b-local-catalog/phase7-local-crosswalk-real/phase7-local-crosswalk-real-canonical-shadow-report.json",
+        report_path=_report_path(tmp_path),
         output_path=tmp_path / "queue.json",
     )
+
+
+def _report_path(tmp_path: Path) -> Path:
+    """Write the smallest valid Phase 7 shadow report for queue tests."""
+
+    summaries = [
+        {
+            "candidate_count": 2,
+            "candidate_digests": [
+                "sha256:" + f"{index + 1:064x}",
+                "sha256:" + f"{index + 101:064x}",
+            ],
+            "normalized_key_digest": "sha256:" + f"{index + 201:064x}",
+        }
+        for index in range(7)
+    ]
+    path = tmp_path / "crosswalk-shadow-report.json"
+    path.write_text(
+        json.dumps(
+            {
+                "status": "PHASE7_CROSSWALK_REAL_CANONICAL_SHADOW_BLOCKED_DATA_QUALITY",
+                "canonical_collision_summaries": summaries,
+                "canonical_source": {
+                    "identity_basis": ["brand", "serial_name"],
+                    "stable_identity_columns": [],
+                },
+                "source_snapshot": {"content_digest": "sha256:" + "1" * 64},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path

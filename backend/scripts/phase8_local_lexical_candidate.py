@@ -5,9 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-
-from pymilvus import DataType, Function, FunctionType, MilvusClient
 
 from knowledge_platform.catalog import SqliteCatalogQueryRepository
 from knowledge_platform.catalog.vector_rebuild import (
@@ -25,6 +24,30 @@ _ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_OUTPUT_DIR = _ROOT / "artifacts/phase0b-local-catalog"
 _DEFAULT_CATALOG = _DEFAULT_OUTPUT_DIR / "knowledge-platform.sqlite3"
 _COLLECTION = "puddingclaw_platform_candidate_lexical_text"
+MilvusClient = None
+
+
+def _milvus_client(*, uri: str, timeout: int) -> Any:
+    """Load the optional Milvus provider only when the real client is needed."""
+
+    global MilvusClient
+    if MilvusClient is None:
+        try:
+            from pymilvus import MilvusClient as client_type
+        except ModuleNotFoundError as error:
+            raise RuntimeError("optional provider pymilvus is required for a lexical candidate") from error
+        MilvusClient = client_type
+    return MilvusClient(uri=uri, timeout=timeout)
+
+
+def _milvus_components() -> tuple[Any, Any, Any]:
+    """Resolve optional schema components lazily, with symbolic values for injected fakes."""
+
+    try:
+        from pymilvus import DataType, Function, FunctionType
+    except ModuleNotFoundError:
+        return None, None, None
+    return DataType, Function, FunctionType
 
 
 def _candidate_manifest_and_chunks(
@@ -66,24 +89,35 @@ def _candidate_manifest_and_chunks(
 
 
 def _create_schema(client: Any) -> Any:
+    data_type, function_type_class, function_types = _milvus_components()
+    varchar = getattr(data_type, "VARCHAR", "VARCHAR")
+    sparse_float_vector = getattr(data_type, "SPARSE_FLOAT_VECTOR", "SPARSE_FLOAT_VECTOR")
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
-    schema.add_field(field_name="id", datatype=DataType.VARCHAR, max_length=255, is_primary=True)
-    schema.add_field(field_name="doc_id", datatype=DataType.VARCHAR, max_length=255)
+    schema.add_field(field_name="id", datatype=varchar, max_length=255, is_primary=True)
+    schema.add_field(field_name="doc_id", datatype=varchar, max_length=255)
     schema.add_field(
         field_name="text",
-        datatype=DataType.VARCHAR,
+        datatype=varchar,
         max_length=65535,
         enable_analyzer=True,
     )
-    schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
-    schema.add_function(
-        Function(
+    schema.add_field(field_name="sparse_embedding", datatype=sparse_float_vector)
+    if function_type_class is None:
+        schema.add_function(SimpleNamespace(
             name="puddingclaw_platform_bm25",
-            function_type=FunctionType.BM25,
+            function_type="BM25",
             input_field_names=["text"],
             output_field_names=["sparse_embedding"],
+        ))
+    else:
+        schema.add_function(
+            function_type_class(
+                name="puddingclaw_platform_bm25",
+                function_type=function_types.BM25,
+                input_field_names=["text"],
+                output_field_names=["sparse_embedding"],
+            )
         )
-    )
     return schema
 
 
@@ -145,7 +179,7 @@ def run_shadow(
             }
         )
 
-        client = MilvusClient(uri=milvus_uri, timeout=10)
+        client = _milvus_client(uri=milvus_uri, timeout=10)
         if client.has_collection(collection_name=_COLLECTION):
             result["error_type"] = "CandidateCollectionAlreadyExists"
             result["status"] = "PHASE8_LOCAL_VECTOR_LEXICAL_CANDIDATE_BLOCKED_EXISTING_COLLECTION"

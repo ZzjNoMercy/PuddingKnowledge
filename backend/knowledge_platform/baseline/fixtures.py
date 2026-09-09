@@ -372,18 +372,27 @@ def validate_fixture_manifest(
                 or _TAGGED_DIGEST_RE.fullmatch(revision) is None
             ):
                 raise ValueError("source snapshot contains an invalid capability source digest")
-            source_records = _validate_source_snapshot_files(
-                raw_source_capability.get("source_files"),
-                capability_id=capability_id,
-                kind="source_files",
-                repo_root=repo_root,
-            )
-            test_records = _validate_source_snapshot_files(
-                raw_source_capability.get("test_files"),
-                capability_id=capability_id,
-                kind="test_files",
-                repo_root=repo_root,
-            )
+            # ``capture-required`` is deliberately a target-local fixture
+            # contract.  Its source/test paths describe the historical
+            # observation and may belong to the mixed legacy checkout, which
+            # is not a dependency of the extracted repository.  A frozen
+            # manifest still validates every content-addressed source file.
+            if status == "frozen":
+                source_records = _validate_source_snapshot_files(
+                    raw_source_capability.get("source_files"),
+                    capability_id=capability_id,
+                    kind="source_files",
+                    repo_root=repo_root,
+                )
+                test_records = _validate_source_snapshot_files(
+                    raw_source_capability.get("test_files"),
+                    capability_id=capability_id,
+                    kind="test_files",
+                    repo_root=repo_root,
+                )
+            else:
+                source_records = tuple(raw_source_capability.get("source_files") or ())
+                test_records = tuple(raw_source_capability.get("test_files") or ())
             if revision != _snapshot_records_digest(source_records):
                 raise ValueError(f"{capability_id} source_digest does not match source_files")
             if raw_source_capability.get("test_manifest_digest") != _snapshot_records_digest(test_records):

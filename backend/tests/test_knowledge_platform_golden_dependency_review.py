@@ -14,11 +14,13 @@ from scripts.phase0a_golden_dependency_review_queue import build_review_queue
 
 
 def test_real_golden_dependency_queue_is_path_free_and_not_frozen(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    from tests._knowledge_platform_target_fixtures import golden_dependency_inputs
+
+    _queue, canonical, _review_id, _observation = golden_dependency_inputs(tmp_path)
     report = build_review_queue(
-        replay_report_path=root / "artifacts/phase0a/golden-replay-report.json",
-        candidate_path=root / "artifacts/phase0a/golden-recapture-candidates/connectors_and_capture.json",
-        canonical_path=root / "docs/knowledge-platform/golden-records/connectors_and_capture.json",
+        replay_report_path=canonical.parent / "replay.json",
+        candidate_path=canonical.parent / "candidate.json",
+        canonical_path=canonical,
         output_path=tmp_path / "queue.json",
     )
     text = (tmp_path / "queue.json").read_text(encoding="utf-8")
@@ -30,11 +32,13 @@ def test_real_golden_dependency_queue_is_path_free_and_not_frozen(tmp_path: Path
 
 
 def test_golden_dependency_queue_rejects_tampered_review_id(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    from tests._knowledge_platform_target_fixtures import golden_dependency_inputs
+
+    _queue, canonical, _review_id, _observation = golden_dependency_inputs(tmp_path)
     report = build_review_queue(
-        replay_report_path=root / "artifacts/phase0a/golden-replay-report.json",
-        candidate_path=root / "artifacts/phase0a/golden-recapture-candidates/connectors_and_capture.json",
-        canonical_path=root / "docs/knowledge-platform/golden-records/connectors_and_capture.json",
+        replay_report_path=canonical.parent / "replay.json",
+        candidate_path=canonical.parent / "candidate.json",
+        canonical_path=canonical,
         output_path=tmp_path / "queue.json",
     )
     tampered = copy.deepcopy(report)

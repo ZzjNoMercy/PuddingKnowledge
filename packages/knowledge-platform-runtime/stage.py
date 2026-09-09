@@ -12,11 +12,12 @@ def stage(output: Path) -> None:
         raise ValueError("staging path contains a symlink")
     if output.exists():
         raise FileExistsError("staging output must be new")
+    metadata = repo / "backend"
     sources = [repo / "backend" / name for name in ("knowledge_platform", "knowledge_contracts")]
     if any(output.is_relative_to(source) for source in sources):
         raise ValueError("staging output must be outside source trees")
     for name in ("pyproject.toml", "uv.lock"):
-        if (package / name).is_symlink() or not (package / name).is_file():
+        if (metadata / name).is_symlink() or not (metadata / name).is_file():
             raise ValueError("build metadata must be a regular file")
     # Validate before writing; never follow source symlinks into host data.
     for source in sources:
@@ -24,9 +25,9 @@ def stage(output: Path) -> None:
             raise ValueError("source tree contains a symlink")
     output.mkdir()
     for name in ("pyproject.toml", "uv.lock"):
-        shutil.copyfile(package / name, output / name)
+        shutil.copyfile(metadata / name, output / name)
     for source in sources:
-        shutil.copytree(source, output / "src" / source.name,
+        shutil.copytree(source, output / source.name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
