@@ -129,3 +129,7 @@ unaccepted. CI now contains the executable lifecycle smoke; remote CI itself has
 not been run.
 
 2026-09-10 独立持久 Wiki Processing：新增可选 state-dir，首次复制 Catalog/Wiki，后续复用 owned Catalog；接入显式 HTTP model 的 WikiCompilationWorker 与即时 Asset read/Wiki query。请求指纹、发布正文、receipt 与输出 Catalog Asset 事务提交；同键换输入拒绝，取消/进程退出释放 flock 后可重试。真实 HTTP 模型 fixture + 两次独立服务进程验证仅生成一次，仓库外已安装包同样通过；Deploy CLI stage/deploy/install/start/stop/restart 验证持久 Catalog 修改保留。该切片不能替代尚未接入的 Capture/Connector Sync/Semantic、完整 import/export/index 和状态升级回滚验收。
+
+2026-09-10 URL Capture / Read Later：独立服务现支持 URL 抓取、列表、失败重试、资产读取和 Wiki promotion。抓取进程有 60 秒总期限与解压后 5 MiB 边界；公共地址策略逐跳校验并固定 DNS 结果，测试私有 origin 仅由本地配置授权。原始内容和规范化 Markdown 先写入不可变对象存储，再以所有权条件更新持久任务和 Catalog；加密 URL、双重文件锁、对象目录 FD 和存储身份绑定覆盖重试及目录替换边界。迁入纯 Feishu blocks 转换器，尚不代表完整 Feishu Sync。
+
+验证：最终相关回归 56 passed；兼容回归 28 passed；Deploy CLI 39 passed；仓库外已安装包真实 Capture 进程 1 passed。完整发行包 stage/deploy/install/start/capture/read/stop/restart/replay 通过，原 Catalog 不变，重放没有第二次抓取。运行包 manifest 为 sha256:2ff4a8f7fccd941b294079a2963e895e31b54819edc493d09c6171dcfdcecc6c。对抗式审查问题已修复并加入反例测试；远程 CI 未执行。剩余包括图片二进制缓存、阅读状态与删除、完整 Feishu 授权/发现/增量同步、Semantic 模型处理、import/export/index、升级回滚和生产连续性验收；整体拆分目标仍未完成。

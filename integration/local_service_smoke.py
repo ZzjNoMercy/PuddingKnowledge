@@ -13,7 +13,11 @@ import shutil
 import socket
 import subprocess
 import tempfile
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import base64
 
 FIXTURE = """
 import sqlite3, sys
@@ -24,20 +28,41 @@ root=Path(sys.argv[1]); engine=create_engine(f"sqlite:///{root / 'catalog.sqlite
 with engine.begin() as conn: migrate_to_latest(conn)
 engine.dispose()
 with sqlite3.connect(root / 'catalog.sqlite3') as conn:
- conn.execute("INSERT INTO knowledge_spaces VALUES ('space_kb_default','Local','','{}','now','now')")
- conn.execute("INSERT INTO knowledge_datasets VALUES ('dataset_kb_default','space_kb_default','Local','v1','document','','[]','[]','[]','{}','{}','','now','now')")
+ conn.execute("INSERT INTO knowledge_spaces VALUES ('space_kb_default','Local','','{}','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')")
+ conn.execute("INSERT INTO knowledge_datasets VALUES ('dataset_kb_default','space_kb_default','Local','v1','document','','[]','[]','[]','{}','{}','','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')")
 (root/'wiki').mkdir(); (root/'wiki/page.md').write_text('# Lifecycle fixture\\n\\nOWNED_SERVICE_EVIDENCE\\n')
 """
 
 
+@contextmanager
+def capture_source(enabled):
+    if not enabled:
+        yield None, []
+        return
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(self.path)
+            body=b'<html><title>Owned Capture</title><article>DEPLOY_CAPTURE_317</article></html>'
+            self.send_response(200); self.send_header('Content-Type','text/html'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
+        def log_message(self,*args): pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    try: yield f'http://127.0.0.1:{server.server_port}',calls
+    finally: server.shutdown();server.server_close();thread.join(timeout=5)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--capture', action='store_true')
     parser.add_argument('--persistent', action='store_true')
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--fixture-python', type=Path, required=True)
     args = parser.parse_args()
     repo = args.repo.resolve()
-    with tempfile.TemporaryDirectory(prefix='knowledge-service-') as directory:
+    if args.capture:
+        args.persistent = True
+    with tempfile.TemporaryDirectory(prefix='knowledge-service-') as directory, capture_source(args.capture) as (source_origin, source_calls):
         root = Path(directory).resolve()
         home = root / 'home'
         bundle = root / 'bundle'
@@ -71,6 +96,16 @@ def main() -> None:
         state = home / 'catalog' / 'state'
         if args.persistent:
             start += ('--state-dir', str(state))
+        if args.capture:
+            capture_config=root / 'capture.json'
+            capture_config.write_text(json.dumps({'version':1,'allowed_origins':[source_origin]}))
+            start += ('--capture-config',str(capture_config))
+        def post_capture():
+            body={'url':source_origin+'/article','space_id':'space_kb_default','idempotency_key':'deploy-capture'}
+            with urlopen(Request(f'http://127.0.0.1:{port}/v1/captures',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=10) as response:
+                result=json.load(response)
+            assert result['status']=='ok',result
+            return result['data']['capture']
         try:
             assert call(*start)['status'] == 'running'
             call(*start, fail=True)
@@ -79,6 +114,8 @@ def main() -> None:
             assert call('health')['status'] == 'running'
             with urlopen(f'http://127.0.0.1:{port}/v1/spaces', timeout=3) as response:
                 assert json.load(response)['status'] == 'ok'
+            if args.capture:
+                captured=post_capture()
             assert call('stop', '--apply')['status'] == 'stopped'
             assert call('status')['status'] != 'running'
             if args.persistent:
@@ -89,6 +126,13 @@ def main() -> None:
             if args.persistent:
                 with urlopen(f'http://127.0.0.1:{port}/v1/spaces', timeout=3) as response:
                     assert 'Persistent restart marker' in response.read().decode()
+            if args.capture:
+                assert post_capture()==captured
+                assert len(source_calls)==1
+                with urlopen(Request(f"http://127.0.0.1:{port}/v1/assets/{captured['asset_id']}:read",data=b'{"end":4096}',headers={'Content-Type':'application/json'}),timeout=3) as response:
+                    result=json.load(response)
+                assert result['status']=='ok',result
+                assert b'DEPLOY_CAPTURE_317' in base64.b64decode(result['data']['content_base64'])
 
         finally:
             # Stop even when startup returned malformed evidence after spawning.
@@ -102,7 +146,7 @@ def main() -> None:
                           'supervisor_sha256': supervisor_sha,
                           'owned_bundle_survives_source_removal': True, 'locked_installed_runtime': True,
                           'real_start_health_stop_restart': True, 'duplicate_start_rejected': True,
-                          'persistent_catalog_restart': args.persistent, 'source_catalog_unchanged': True, 'production_activation_allowed': False}))
+                          'persistent_catalog_restart': args.persistent, 'capture_ingest_read_restart': args.capture, 'source_catalog_unchanged': True, 'production_activation_allowed': False}))
 
 
 if __name__ == '__main__':

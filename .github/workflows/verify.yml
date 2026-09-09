@@ -45,8 +45,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: uv sync --project backend --locked --no-editable
-      - run: uv run --project backend --no-sync python integration/local_service_smoke.py --repo "$PWD" --fixture-python "$PWD/backend/.venv/bin/python"
+      - run: uv run --project backend --no-sync python integration/local_service_smoke.py --repo "$PWD" --fixture-python "$PWD/backend/.venv/bin/python" --capture
       - run: '"$GITHUB_WORKSPACE/backend/.venv/bin/python" -m pytest "$GITHUB_WORKSPACE/backend/tests/test_knowledge_platform_wiki_process.py" -q'
+        working-directory: /tmp
+        env:
+          KNOWLEDGE_TEST_INSTALLED: '1'
+      - run: '"$GITHUB_WORKSPACE/backend/.venv/bin/python" -m pytest "$GITHUB_WORKSPACE/backend/tests/test_knowledge_platform_read_later_runtime.py" -k real_process -q'
         working-directory: /tmp
         env:
           KNOWLEDGE_TEST_INSTALLED: '1'

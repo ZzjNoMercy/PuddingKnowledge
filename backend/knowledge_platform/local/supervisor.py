@@ -227,6 +227,7 @@ def _child_command(
     structured_config: Path | None,
     state_dir: Path | None = None,
     wiki_config: Path | None = None,
+    capture_config: Path | None = None,
 ) -> list[str]:
     runtime = [
         sys.executable,
@@ -249,7 +250,7 @@ def _child_command(
         runtime.extend(("--database-config", str(database_config)))
     if structured_config is not None:
         runtime.extend(("--structured-config", str(structured_config)))
-    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config)):
+    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config), ("capture-config", capture_config)):
         if value is not None:
             runtime.extend(("--" + name, str(value)))
     return [
@@ -399,6 +400,7 @@ def _manager_main(args: argparse.Namespace) -> int:
                     structured_config=Path(args.structured_config) if args.structured_config else None,
                     state_dir=Path(args.state_dir) if args.state_dir else None,
                     wiki_config=Path(args.wiki_config) if args.wiki_config else None,
+                    capture_config=Path(args.capture_config) if args.capture_config else None,
                 ),
                 cwd=home,
                 stdin=subprocess.DEVNULL,
@@ -555,7 +557,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if args.database_config:
             command.extend(("--database-config", str(Path(args.database_config))))
-        for name in ("state_dir", "wiki_config"):
+        for name in ("state_dir", "wiki_config", "capture_config"):
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(("--" + name.replace("_", "-"), str(value)))
@@ -617,6 +619,7 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--structured-config", type=Path)
             sub.add_argument("--state-dir", type=Path)
             sub.add_argument("--wiki-config", type=Path)
+            sub.add_argument("--capture-config", type=Path)
     manager = subparsers.add_parser("_manager")
     for name in ("home", "catalog", "wiki-root", "run-dir"):
         manager.add_argument("--" + name, required=True)
@@ -626,6 +629,7 @@ def _parser() -> argparse.ArgumentParser:
     manager.add_argument("--structured-config")
     manager.add_argument("--state-dir")
     manager.add_argument("--wiki-config")
+    manager.add_argument("--capture-config")
     return parser
 
 

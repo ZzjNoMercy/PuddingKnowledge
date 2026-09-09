@@ -79,6 +79,51 @@ be included in the existing catalog backup root. Backup consistency during live
 writes and full upgrade/rollback remain separate acceptance work.
 
 This is a loopback local service with an explicit local principal. Semantic,
-Capture, Connector Sync, full import/export/index execution, production
+Connector Sync, full import/export/index execution, production
 multi-user authentication and complete stateful upgrade/rollback are not yet
 included in this runtime composition.
+
+## URL capture and owned sources
+
+Add `--capture-config /absolute/capture.json` while using state-dir:
+
+```json
+{"version":1,"allowed_origins":[]}
+```
+
+The default fetch policy permits public HTTP(S) only. An operator may explicitly
+allow a complete private origin such as `http://127.0.0.1:18080` for a controlled
+source. This exception is host configuration; API callers cannot add origins.
+Each redirect rechecks DNS and policy, connections use validated IPs, HTTPS
+verifies the original hostname, and responses are bounded. A dedicated fetch
+process is killed and reaped on cancellation or the 60-second overall timeout.
+
+`POST /v1/captures` accepts `url`, `space_id: "space_kb_default"` and a stable
+`idempotency_key`. The response identifies a durable ingestion job and the
+published content Asset. `GET /v1/captures` lists captures, and
+`POST /v1/captures/jobs/{job_id}:retry` replays a failed or interrupted request.
+Completed requests return their original Asset without fetching again. A key
+cannot be reused for another canonical URL. URL and retry-key values are kept
+in the encrypted local Vault; Catalog metadata contains digests and references.
+
+Raw response bytes and normalized Markdown are immutable content-addressed
+objects. Object bytes are fsynced before the Catalog transaction publishes the
+Asset references and marks the job complete. An interrupted transaction can
+leave an unreferenced object, but cannot expose a partial publication. The
+Catalog binds to the object store's persistent identity; restoring only its
+SQLite file without the associated objects is rejected. Preserve the entire
+owned state directory, including its Vault, when backing up this runtime.
+
+Captured Markdown can be read through the normal Asset read endpoint and
+promoted through `POST /v1/captures/assets/{asset_id}:promote`, with
+`source_revision` (the capture content digest) and `idempotency_key`. Promotion
+requires wiki-config; its `assets` map may be empty because the captured source
+is resolved from the owned Catalog and object store. It needs no external source
+file and does not fetch the original page again. The same processing/Space scope
+checks apply to capture and promotion; query MCP remains read-only.
+
+Article extraction retains article-body selection, noise removal, titles,
+WeChat formatting and image links. Image binary caching, reading-status edits,
+delete/purge and full Feishu discovery/auth/incremental sync remain outstanding.
+The independent Feishu block converter is available as a pure conversion layer;
+it does not by itself establish a working Feishu connection or sync runtime.

@@ -23,3 +23,7 @@ subsequent starts reuse its Catalog, so published datasets and Wiki survive rest
 Wiki compilation additionally accepts `--wiki-config /absolute/wiki.json` with
 an explicit HTTP model endpoint and approved source bindings. See
 [the persistent runtime guide](docs/knowledge-platform/persistent-local-runtime.md).
+
+The persistent runtime also accepts `--capture-config` for public URL ingestion,
+owned Raw Snapshots, retry and Wiki promotion. Source URLs stay in its encrypted
+Vault. See the same persistent runtime guide for API and policy details.

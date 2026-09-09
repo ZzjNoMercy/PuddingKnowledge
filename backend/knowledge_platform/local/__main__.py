@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
     parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
     parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
@@ -95,6 +96,16 @@ def main() -> int:
             structured_config = load_structured_config(args.structured_config)
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local structured configuration\n")
+    capture_config = None
+    if args.capture_config:
+        if args.state_dir is None:
+            parser.error("capture-config requires state-dir")
+        capture_config = json.loads(args.capture_config.read_text())
+        if (not isinstance(capture_config, dict) or set(capture_config) != {"version", "allowed_origins"}
+                or type(capture_config["version"]) is not int or capture_config["version"] != 1
+                or not isinstance(capture_config["allowed_origins"], list)
+                or any(not isinstance(value, str) for value in capture_config["allowed_origins"])):
+            parser.error("Invalid capture configuration")
     wiki_config = None
     if args.wiki_config:
         if args.state_dir is None:
@@ -139,12 +150,16 @@ def main() -> int:
             except Exception:
                 parser.exit(2, "Local structured binding failed; check approved Assets and source digests\n")
             structured_scopes = STRUCTURED_SCOPES
+        read_later = None
+        if capture_config is not None:
+            from knowledge_platform.local.read_later import ReadLaterService
+            read_later = ReadLaterService(catalog, args.state_dir / "processing", allowed_origins=capture_config["allowed_origins"])
         wiki_services = {}
         if wiki_config:
             from knowledge_platform.local.wiki import build_wiki_services
             from knowledge_platform.local.wiki_query import PublishedWikiReader
             try:
-                services = build_wiki_services(wiki_config, catalog, args.state_dir / "processing")
+                services = build_wiki_services(wiki_config, catalog, args.state_dir / "processing", captured_sources=read_later)
                 published = PublishedWikiReader(SqliteCatalogQueryRepository(catalog), services)
                 wiki_services = {"wiki_compilation": services.wiki_compilation,
                                  "wiki_provider": published, "wiki_blob_reader": published}
@@ -155,7 +170,7 @@ def main() -> int:
             "knowledge.space:space_kb_default",
             *database_scopes,
             *structured_scopes,
-            *(("knowledge.processing",) if wiki_config else ()),
+            *(("knowledge.processing",) if wiki_config or read_later else ()),
             *(("knowledge.admin",) if args.asset_binding_review_queue else ()),
         ))
         app = _build_app(
@@ -163,6 +178,7 @@ def main() -> int:
             **database_services,
             **structured_services,
             **wiki_services,
+            read_later=read_later,
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )

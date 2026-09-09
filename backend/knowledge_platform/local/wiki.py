@@ -138,7 +138,7 @@ def load_wiki_config(path: Path) -> dict[str, Any]:
     if value.get("space_id") != "space_kb_default":
         raise ValueError("Wiki configuration Space must be space_kb_default")
     assets = value.get("assets")
-    if not isinstance(assets, dict) or not assets:
+    if not isinstance(assets, dict):
         raise ValueError("Wiki configuration assets are required")
     normalized_assets: dict[str, Any] = {}
     for asset_id, asset in assets.items():
@@ -524,7 +524,7 @@ class _BoundWikiCompilationWorker(WikiCompilationWorker):
 
 
 def build_wiki_services(
-    config: Mapping[str, Any], catalog_path: Path, state_root: Path
+    config: Mapping[str, Any], catalog_path: Path, state_root: Path, *, captured_sources=None
 ) -> WikiServices:
     """Build the durable Wiki worker and dynamic publication reader."""
 
@@ -534,7 +534,7 @@ def build_wiki_services(
         raise ValueError("Wiki configuration Space must be space_kb_default")
     assets = config.get("assets")
     model_config = config.get("model")
-    if not isinstance(assets, Mapping) or not assets or not isinstance(model_config, Mapping):
+    if not isinstance(assets, Mapping) or not isinstance(model_config, Mapping):
         raise ValueError("Wiki configuration is incomplete")
     # Import at construction time so a missing model adapter fails clearly and
     # does not make ordinary local query startup import an optional SDK.
@@ -542,10 +542,12 @@ def build_wiki_services(
 
     store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id="space_kb_default")
     jobs = _WorkerJobAdapter(store)
+    snapshots = _ConfiguredRawSnapshotRepository(assets=assets, space_id="space_kb_default", catalog_path=catalog_path)
+    if captured_sources is not None:
+        from knowledge_platform.local.read_later import CaptureAndConfiguredSnapshots
+        snapshots = CaptureAndConfiguredSnapshots(captured_sources, snapshots)
     worker = _BoundWikiCompilationWorker(
-        snapshots=_ConfiguredRawSnapshotRepository(
-            assets=assets, space_id="space_kb_default", catalog_path=catalog_path
-        ),
+        snapshots=snapshots,
         context=BoundedWikiContextService(),
         model=HttpWikiModelGateway(dict(model_config)),
         validator=LocalWikiDraftValidator(),

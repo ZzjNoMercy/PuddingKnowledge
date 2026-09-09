@@ -54,6 +54,7 @@ def _build_app(
     wiki_compilation: Any | None = None,
     wiki_provider: Any | None = None,
     wiki_blob_reader: Any | None = None,
+    read_later: Any | None = None,
 ):
     catalog = CatalogQueryService(repository)
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
@@ -62,6 +63,9 @@ def _build_app(
         provider = _CombinedWikiProvider(provider, wiki_provider)
     if wiki_blob_reader is not None:
         reader = _CombinedBlobReader(reader, wiki_blob_reader, frozenset(bindings))
+    if read_later is not None:
+        from knowledge_platform.local.read_later import CaptureBlobReader
+        reader = CaptureBlobReader(repository, read_later, reader)
     asset_read = AssetReadService(catalog=repository, reader=reader)
     derivative_bindings = {
         str(asset.get("id")): ("normalized_markdown",)
@@ -107,7 +111,7 @@ def _build_app(
             notifications=notifications,
             asset_binding_review_queue=asset_binding_review_queue,
         )
-    return create_platform_app(
+    app = create_platform_app(
         query_adapter=rest,
         admin_adapter=admin,
         job_adapter=jobs,
@@ -115,6 +119,10 @@ def _build_app(
         principal_provider=lambda: principal,
         correlation_provider=lambda: Correlation("phase8-local-platform-http-shadow"),
     )
+    if read_later is not None:
+        from knowledge_platform.transport.fastapi_capture_router import create_capture_router
+        app.include_router(create_capture_router(read_later, principal_provider=lambda: principal, wiki_compilation=wiki_compilation))
+    return app
 
 
 class _CombinedWikiProvider:
