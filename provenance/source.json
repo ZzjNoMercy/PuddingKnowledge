@@ -11,5 +11,9 @@
   "retained_commits_before_cleanup": 30,
   "signed_release": false,
   "production_activation_allowed": false,
-  "complete_repository_acceptance": false
+  "complete_repository_acceptance": false,
+  "inherited_tag_names": {
+    "v1.2.0-higress-final": "source-puddingclaw/v1.2.0-higress-final"
+  },
+  "inherited_tags_are_target_releases": false
 }
