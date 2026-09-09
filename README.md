@@ -3,7 +3,7 @@
 Independent development checkout extracted from PuddingClaw history.
 
 Backend: `cd backend && uv sync --locked --no-editable && uv run --no-sync puddingknowledge-local --help`.
-Tests: from backend, run `uv run --no-sync python -m pytest -q`. Optional PostgreSQL and Excel coverage uses `uv sync --locked --no-editable --all-extras`; real PostgreSQL replay also requires local initdb/postgres/psql binaries. The tests create isolated temporary databases and do not use an existing server.
+Tests: from backend, run `uv run --no-sync python -m pytest -q`. Optional PostgreSQL and Excel coverage uses `uv sync --locked --no-editable --all-extras`; real PostgreSQL replay also requires local initdb/postgres/psql binaries. The tests create isolated temporary databases and do not use an existing server. Before full all-extras process replay, run the Product UI install/build below: the launcher integration intentionally reuses that production build with --no-build.
 Product UI: `cd packages/knowledge-platform-web && npm ci && npm run build`.
 Other packages own their individual package manifests and tests.
 

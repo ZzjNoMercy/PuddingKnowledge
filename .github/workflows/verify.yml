@@ -13,6 +13,8 @@ jobs:
           python-version: '3.12'
       - run: uv sync --locked --no-editable --all-extras
         working-directory: backend
+      - run: npm ci && npm run build
+        working-directory: packages/knowledge-platform-web
       - run: uv run --no-sync python -m pytest -q
         working-directory: backend
   frontend-and-packages:
