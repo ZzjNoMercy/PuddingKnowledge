@@ -1,0 +1,15 @@
+{
+  "format": "pudding-repository-development-source/v1",
+  "source_repository": "PuddingClaw",
+  "original_revision": "5c03ad3f68e2789d6d5c7110995b580d00abc832",
+  "reviewed_source_commit": "e62277cde9596adfabb1997c54488043d2e1d97c",
+  "source_snapshot_digest": "d259622b2948f6cbf7c236b2dbabb957895159d2e388997b90167c6234b4403e",
+  "filtered_head": "312985ba6746f1868cb5233c93f029294a1cc1bf",
+  "filter_tool_version": "git-filter-repo 2.47.0 (a40bce548d2c)",
+  "filter_paths_sha256": "9c651ec7f332d81812dedb50ffd52c59d5d0d844ec09704984a755938fdc40a5",
+  "commit_map_sha256": "3a9aa08051a7d098df3ff1e90e59dc567cbf0f8e5985b5e09854ecf30aaaed2d",
+  "retained_commits_before_cleanup": 30,
+  "signed_release": false,
+  "production_activation_allowed": false,
+  "complete_repository_acceptance": false
+}
