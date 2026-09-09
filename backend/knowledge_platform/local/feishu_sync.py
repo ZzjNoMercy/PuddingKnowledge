@@ -76,7 +76,8 @@ class FeishuSyncService:
         selection = FeishuSelection(**connector.config_json['selection'])
         # Credentials/config changes invalidate an in-flight publisher too.
         fingerprint = _hash(_json({'selection':asdict(selection), 'credential_ref':connector.credential_ref,
-                                  'config':connector.config_json, 'space_id':space_id}))
+                                  'config':connector.config_json, 'space_id':space_id,
+                                  **({'auth_type':connector.auth_type} if connector.auth_type=='user' or connector.config_json.get('auth_type')=='user' else {})}))
         return selection, fingerprint
 
     def _fence(self, session, run_id, owner, connector_id, space_id, fingerprint):

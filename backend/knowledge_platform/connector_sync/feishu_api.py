@@ -74,6 +74,8 @@ class _Urllib3Transport:
                         raise FeishuApiError("飞书 OpenAPI 响应超过大小上限。", status_code=response.status)
                     chunks.append(chunk)
                 return HttpResponse(response.status, dict(response.headers), b"".join(chunks))
+            except (urllib3.exceptions.HTTPError, OSError):
+                raise FeishuApiError("飞书 OpenAPI 响应读取失败。") from None
             finally:
                 response.close()
 

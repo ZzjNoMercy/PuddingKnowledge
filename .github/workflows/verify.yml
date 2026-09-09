@@ -58,3 +58,7 @@ jobs:
         working-directory: /tmp
         env:
           KNOWLEDGE_TEST_INSTALLED: '1'
+      - run: '"$GITHUB_WORKSPACE/backend/.venv/bin/python" -m pytest "$GITHUB_WORKSPACE/backend/tests/test_knowledge_platform_oauth_runtime.py" -q'
+        working-directory: /tmp
+        env:
+          KNOWLEDGE_TEST_INSTALLED: '1'

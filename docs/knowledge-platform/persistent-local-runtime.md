@@ -175,9 +175,64 @@ objects are written before their Catalog references and bound to the owned
 object-store identity.
 
 This is the application-authenticated Docx runtime checkpoint, not complete
-Feishu feature parity. Remaining work includes user OAuth/refresh grants, Lark
+Feishu feature parity. Remaining work includes Lark
 endpoint support, media/attachment downloads and parser routing, Drive binary
 files, complete Bitable schema/relation/live-row APIs, per-item failure isolation,
 resumable pagination checkpoints, indexing and Console flows. Bitable entries
 currently remain live links; no row values are copied into Catalog. Production
 account acceptance, upgrades, rollback and continuity gates are still pending.
+
+## Feishu user OAuth
+
+A source can explicitly select `"auth_type":"user"`. Tenant sources retain
+application identity; changing an existing source's auth type requires an
+explicit migration. A user source adds these fields to its existing Feishu
+configuration:
+
+```json
+{
+  "auth_type": "user",
+  "oauth_redirect_uris": ["http://127.0.0.1:8889/v1/sources/oauth/callback"],
+  "oauth_scopes": ["offline_access", "wiki:wiki:readonly", "docx:document:readonly"]
+}
+```
+
+Register the exact callback URI in the Feishu application configuration. The
+URI must also match the configured local service port. The local runtime binds
+user flows to its server-owned `knowledge-local` principal; callback bodies
+cannot choose a principal. This single-user local binding is not a substitute
+for production session authentication.
+
+1. `POST /v1/sources/SOURCE_ID:authorize` with the exact configured
+   `{"redirect_uri":"..."}` returns an authorization URL and a 10-minute expiry.
+   Open that URL to obtain the user's consent.
+2. Feishu's redirect reaches `GET /v1/sources/oauth/callback?state=...&code=...`.
+   An explicit client can instead POST exactly `state` and `code` to the same
+   path. State is one-shot and bound to the source, principal, application,
+   redirect digest, requested scopes and current authorization generation.
+3. The existing source sync command now uses the active user grant. The provider's
+   actual scopes must cover the configured request; requested scopes never stand
+   in for omitted consent evidence. Token expiry and a single invalid-token retry
+   invoke serialized, version-fenced refresh. Concurrent rejections of the same
+   token reuse the first successful refresh result.
+4. `POST /v1/sources/SOURCE_ID:revoke-authorization` revokes local use immediately.
+   The response contains `provider_revocation: false`: it does not claim the
+   Feishu account's remote consent was revoked. Remote consent must be managed
+   through the provider's controls until a documented provider revocation API is
+   integrated.
+
+State hashes and grant metadata live in Catalog; application secrets, PKCE
+verifiers and access/refresh tokens live only in the Platform Vault. The callback
+commits `exchanging` before remote I/O, so cancellation/crash cannot replay a code.
+Refresh commits `refreshing` before remote I/O, then writes a fresh encrypted
+Vault object and commits its reference with the expected version. An interrupted
+or ambiguous refresh requires reauthorization. It never guesses that the old
+refresh token remains usable. Superseded encrypted token objects are retained
+pending a retention-aware Vault cleanup mechanism; they are not selected by the
+active grant. Local revocation increments authorization generation and wins over
+in-flight callback/refresh/sync publication.
+
+Tests include real provider HTTP requests and independently started runtime
+processes, including SIGKILL during callback and refresh. Production Feishu
+consent, production browser authentication, remote revocation and release/upgrade
+acceptance remain separate, uncompleted gates.

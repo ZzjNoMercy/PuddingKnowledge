@@ -31,7 +31,7 @@ def load_feishu_config(path: Path):
         raise ValueError('Invalid Feishu sources')
     seen=set()
     for item in raw['sources']:
-        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint'}:
+        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint','auth_type','oauth_redirect_uris','oauth_scopes'}:
             raise ValueError('Invalid Feishu source fields')
         if not isinstance(item['id'],str) or not _ID.fullmatch(item['id']) or item['id'] in seen:
             raise ValueError('Invalid Feishu source identity')
@@ -42,6 +42,18 @@ def load_feishu_config(path: Path):
             raise ValueError('Invalid Feishu app identity')
         if not isinstance(item['app_secret_env'],str) or not _ENV.fullmatch(item['app_secret_env']):
             raise ValueError('Invalid Feishu secret environment reference')
+        auth_type=item.get('auth_type','tenant')
+        if auth_type not in {'tenant','user'}:raise ValueError('Invalid Feishu auth type')
+        if auth_type=='user':
+            from knowledge_platform.connector_sync.feishu_oauth import _redirect_uri, _scopes
+            redirects=item.get('oauth_redirect_uris')
+            scopes=item.get('oauth_scopes')
+            if not isinstance(redirects,list) or not 1<=len(redirects)<=10 or any(not isinstance(x,str) or _redirect_uri(x)!=x for x in redirects):
+                raise ValueError('User OAuth needs exact configured redirect URIs')
+            if not isinstance(scopes,list) or not 1<=len(scopes)<=100 or tuple(scopes)!=_scopes(scopes) or 'offline_access' not in scopes:
+                raise ValueError('User OAuth needs explicit scopes including offline_access')
+        elif set(item)&{'oauth_redirect_uris','oauth_scopes'}:
+            raise ValueError('Tenant source cannot configure user OAuth')
         FeishuSelection(**item['selection'])
         # Validates the operator-selected origin without issuing any request.
         FeishuApiClient('validation-only',endpoint=item.get('endpoint'))
@@ -58,11 +70,15 @@ class LocalFeishuService:
         self.brokers={}
         for item in config['sources']:
             selection=asdict(FeishuSelection(**item['selection']))
+            auth_type=item.get('auth_type','tenant')
             secret=os.environ.get(item['app_secret_env'])
             with Session(self.engine) as session,session.begin():
                 if session.get(KnowledgeSpace,SPACE) is None: raise FeishuSyncError('Feishu Space is unavailable')
                 connector=session.get(KnowledgeConnector,item['id'])
                 if connector is not None:
+                    if connector.auth_type!=auth_type:raise FeishuSyncError('Auth type change requires explicit migration')
+                    if auth_type=='user' and any(connector.config_json.get(k)!=item.get(k) for k in ('oauth_redirect_uris','oauth_scopes')):
+                        raise FeishuSyncError('OAuth policy change requires explicit migration')
                     if connector.space_id!=SPACE or connector.connector_key!='feishu' or connector.config_json.get('selection')!=selection:
                         raise FeishuSyncError('Existing Feishu source requires explicit migration')
                     if connector.config_json.get('app_id')!=item['app_id'] or connector.config_json.get('endpoint')!=item.get('endpoint'):
@@ -83,15 +99,27 @@ class LocalFeishuService:
                         external_key=credential_id,display_name=item['name'],api_base_url=item.get('endpoint') or 'https://open.feishu.cn',
                         credential_ref=reference,status='pending_validation'))
                 if connector is None:
-                    connector=KnowledgeConnector(id=item['id'],space_id=SPACE,connector_key='feishu',name=item['name'],status='ready',auth_type='tenant')
+                    connector=KnowledgeConnector(id=item['id'],space_id=SPACE,connector_key='feishu',name=item['name'],status='ready' if auth_type=='tenant' else 'pending_authorization',auth_type=auth_type)
                     session.add(connector)
+                previous_config=dict(connector.config_json or {})
+                if auth_type=='user' and connector.credential_ref and connector.credential_ref!=reference:
+                    connector.status='needs_reauth'
+                    previous_config['authorization_generation']=int(previous_config.get('authorization_generation',0))+1
                 connector.credential_ref=reference
                 connector.config_json={'selection':selection,'app_id':item['app_id'],'endpoint':item.get('endpoint'),'credential_id':credential_id}
+                if auth_type=='user':
+                    connector.config_json={**previous_config,**connector.config_json,'auth_type':'user','connector_id':item['id'],
+                        'oauth_principal':'knowledge-local','oauth_redirect_uris':item['oauth_redirect_uris'],'oauth_scopes':item['oauth_scopes']}
                 connector.updated_at=utcnow()
+        from knowledge_platform.local.feishu_oauth import LocalFeishuOAuth
+        self.oauth=LocalFeishuOAuth(self.engine,self.vault,state_root)
 
     async def _bound_source(self, reference, binding):
         from knowledge_platform.connector_sync.feishu_auth import TenantTokenBroker, FeishuAppConfig, ReauthenticatingFeishuApi
         endpoint=binding.get('endpoint')
+        if binding.get('auth_type')=='user':
+            from knowledge_platform.local.feishu_oauth import UserAuthorizedFeishuApi
+            return FeishuSource(UserAuthorizedFeishuApi(self.oauth,reference,binding,space_id=SPACE))
         key=(reference,endpoint)
         if key not in self.brokers:
             self.brokers[key]=TenantTokenBroker(self.vault,endpoint=endpoint)
