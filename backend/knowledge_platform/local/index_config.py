@@ -64,8 +64,10 @@ def load_index_config(path: Path) -> dict:
     if not isinstance(spaces,list) or not 1<=len(spaces)<=1000 or any(not isinstance(s,str) or not _ID.fullmatch(s) for s in spaces) or len(spaces)!=len(set(spaces)):
         raise ValueError('Index Space bindings are invalid')
     embedding=value['embedding']
-    if not isinstance(embedding,dict) or set(embedding)!={'endpoint','model','dimension','api_key_env'}:
+    if not isinstance(embedding,dict) or set(embedding)-{'protocol'}!={'endpoint','model','dimension','api_key_env'}:
         raise ValueError('Embedding configuration is invalid')
+    if embedding.get('protocol','openai') not in {'openai','dashscope_multimodal'}:
+        raise ValueError('Embedding protocol is invalid')
     ref=embedding['api_key_env']
     if ref is not None and (not isinstance(ref,str) or not _ENV.fullmatch(ref)):
         raise ValueError('Embedding credential reference is invalid')
@@ -74,7 +76,7 @@ def load_index_config(path: Path) -> dict:
     if type(value['max_chars']) is not int or not 100<=value['max_chars']<=12000:
         raise ValueError('Index chunk size is invalid')
     # Pure validation; this constructor does not contact the endpoint.
-    OpenAICompatibleEmbeddingClient(endpoint=embedding['endpoint'],model=embedding['model'],
+    _embedding_class(embedding)(endpoint=embedding['endpoint'],model=embedding['model'],
         dimension=embedding['dimension'],batch_size=value['batch_size'])
     if 'retrieval' in value: validate_retrieval(value['retrieval'])
     return value
@@ -84,7 +86,7 @@ def embedding_client(config):
     embedding=config['embedding'];ref=embedding['api_key_env']
     if ref is not None and ref not in os.environ:
         raise ValueError('Explicit embedding credential environment is missing')
-    return OpenAICompatibleEmbeddingClient(endpoint=embedding['endpoint'],model=embedding['model'],
+    return _embedding_class(embedding)(endpoint=embedding['endpoint'],model=embedding['model'],
         dimension=embedding['dimension'],batch_size=config['batch_size'],api_key=os.environ[ref] if ref else '',timeout=30)
 
 
@@ -135,3 +137,11 @@ def ranking_client(config):
         raise ValueError('Explicit rerank credential environment is missing')
     from knowledge_platform.retrieval.rerank import DashScopeReranker
     return DashScopeReranker(endpoint=rerank['endpoint'],model=rerank['model'],api_key=os.environ[ref] if ref else '')
+
+
+def _embedding_class(embedding):
+    if embedding.get('protocol','openai')=='openai':return OpenAICompatibleEmbeddingClient
+    if embedding.get('protocol')=='dashscope_multimodal':
+        from knowledge_platform.retrieval.multimodal_embedding import DashScopeMultimodalEmbeddingClient
+        return DashScopeMultimodalEmbeddingClient
+    raise ValueError('Embedding protocol is invalid')

@@ -51,7 +51,12 @@ class LocalVectorIndex:
         if type(self.batch_size) is not int or not 1 <= self.batch_size <= 256 or type(self.max_chars) is not int or not 100 <= self.max_chars <= 12000:
             raise ValueError('Invalid vector chunk configuration')
         embedding = self.config['embedding']
-        self.model_identity = _digest(_json({k: embedding[k] for k in ('endpoint','model','dimension')}).encode())
+        if embedding.get('protocol','openai') not in {'openai','dashscope_multimodal'}:
+            raise ValueError('Embedding protocol is invalid')
+        self.multimodal=embedding.get('protocol','openai')=='dashscope_multimodal'
+        model_identity={k:embedding[k] for k in ('endpoint','model','dimension')}
+        if self.multimodal:model_identity['protocol']='dashscope_multimodal'
+        self.model_identity = _digest(_json(model_identity).encode())
         self._lock = asyncio.Lock()
         with self._db() as db:
             db.executescript('''
@@ -90,11 +95,21 @@ class LocalVectorIndex:
             asset = all_assets.get(aid)
             if asset is None or asset.get('space_id') != space or not _DIGEST.fullmatch(str(asset.get('content_digest',''))):
                 raise ValueError('Collection Asset is unavailable')
-            assets.append({k:asset.get(k) for k in ('id','space_id','kind','source_type','source_uri','revision','content_digest','mime_type')})
+            fact={k:asset.get(k) for k in ('id','space_id','kind','source_type','source_uri','revision','content_digest','mime_type')}
+            if self.multimodal and self._is_image(asset):
+                fact.update(title=asset.get('title',''),description=asset.get('description',''))
+            assets.append(fact)
         facts = {k:collection.get(k) for k in ('id','space_id','version','name','kind','asset_ids','semantic_asset_ids','capabilities')}
         signature = _digest(_json({'collection':facts,'assets':assets,'capability':capability,
             'model_identity':self.model_identity,'max_chars':self.max_chars}).encode())
         return signature, assets, collection
+
+    @staticmethod
+    def _is_image(asset):
+        return asset.get('kind') in {'image','derived_media','original_file'} and str(asset.get('mime_type') or '').startswith('image/')
+
+    def _indexed_asset(self,asset):
+        return asset['kind'] in {'document','wiki_page'} or (self.multimodal and self._is_image(asset))
 
     def _vectors(self, raw, count):
         if not isinstance(raw,(list,tuple)) or len(raw) != count:
@@ -177,13 +192,14 @@ class LocalVectorIndex:
             if self.storage is not None:
                 await asyncio.to_thread(self.storage.verify,location[1],
                     [json.loads(chunk['embedding_json']) for chunk in chunks])
-            await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}],principal,request.space_id)
+            await self._verify_sources([a for a in assets if self._indexed_asset(a)],principal,request.space_id)
             self._verify_publications([prior_snapshot])
             return self._result(correlation,prior['generation'],len(chunks),True)
-        texts=[]; total=0
+        texts=[]; total=0;image_payloads={}
         for asset in assets:
-            if asset['kind'] not in {'document','wiki_page'}:continue
-            if not str(asset.get('mime_type') or '').startswith('text/'):
+            if not self._indexed_asset(asset):continue
+            is_image=self.multimodal and self._is_image(asset)
+            if not is_image and not str(asset.get('mime_type') or '').startswith('text/'):
                 raise ValueError('Index requires normalized text Assets')
             req=BlobReadRequest(asset['source_uri'],principal,correlation,0,MAX_BLOB_READ_BYTES,asset['content_digest'])
             result=self.reader.read(req) if hasattr(self.reader,'read') else self.reader(req)
@@ -192,25 +208,38 @@ class LocalVectorIndex:
             if _digest(result.content)!=asset['content_digest']:raise ValueError('Source content digest changed')
             total+=len(result.content)
             if total>_MAX_TOTAL_BYTES:raise ValueError('Index source budget exceeded')
+            if is_image:
+                label=('Image: '+str(asset.get('title') or '')+' '+str(asset.get('description') or '')).strip()[:1200]
+                CitationCandidate(asset['id'],asset['source_uri'],quote=label)
+                texts.append((asset,label))
+                image_payloads[asset['id']]=(result.content,asset['mime_type'])
+                if len(texts)>_MAX_CHUNKS:raise ValueError('Index chunk budget exceeded')
+                continue
             body=result.content.decode('utf-8')
             for offset in range(0,len(body),self.max_chars):
                 text=body[offset:offset+self.max_chars].strip()
                 if text:texts.append((asset,text))
                 if len(texts)>_MAX_CHUNKS:raise ValueError('Index chunk budget exceeded')
-        if not texts:raise ValueError('Index has no text chunks')
+        if not texts:raise ValueError('Index has no supported content')
         if len(texts) * self.dimension > _MAX_COMPONENTS:
             raise ValueError('Index vector budget exceeded')
-        vectors=[]
+        vectors=[None]*len(texts)
         for offset in range(0,len(texts),self.batch_size):
-            batch=texts[offset:offset+self.batch_size]
-            raw=await asyncio.to_thread(self.embedder.embed,[text for _,text in batch])
-            vectors.extend(self._vectors(raw,len(batch)))
-        await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}], principal, request.space_id)
+            positions=range(offset,min(offset+self.batch_size,len(texts)))
+            text_positions=[i for i in positions if texts[i][0]['id'] not in image_payloads]
+            image_positions=[i for i in positions if texts[i][0]['id'] in image_payloads]
+            if text_positions:
+                raw=await asyncio.to_thread(self.embedder.embed,[texts[i][1] for i in text_positions])
+                for i,vector in zip(text_positions,self._vectors(raw,len(text_positions))):vectors[i]=vector
+            if image_positions:
+                raw=await asyncio.to_thread(self.embedder.embed_images,[image_payloads[texts[i][0]['id']] for i in image_positions])
+                for i,vector in zip(image_positions,self._vectors(raw,len(image_positions))):vectors[i]=vector
+        await self._verify_sources([a for a in assets if self._indexed_asset(a)], principal, request.space_id)
         remote_name = None
         if self.provider_id == 'knowledge_milvus_vector':
             remote_name = await asyncio.to_thread(self.storage.prepare, vectors, identity=signature)
             await asyncio.to_thread(self.storage.verify, remote_name, vectors)
-            await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}], principal, request.space_id)
+            await self._verify_sources([a for a in assets if self._indexed_asset(a)], principal, request.space_id)
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             if self._snapshot(key)[0]!=signature:raise ValueError('Index source changed during rebuild')
@@ -295,7 +324,7 @@ class LocalVectorIndex:
                         if collection_id is not None:raise RetrievalIndexNotReady('Vector index binding changed')
                         continue
                     rows=self._check_index(db,row,signature)
-                    source_assets.update({a['id']:a for a in assets if a['kind'] in {'document','wiki_page'}})
+                    source_assets.update({a['id']:a for a in assets if self._indexed_asset(a)})
                     location=self._location(db,key,row['generation'])
                     groups.append((rows,location));snapshots.append((key,signature,row['generation'],location))
             if not groups:return ()
@@ -366,7 +395,7 @@ class LocalVectorIndex:
             results=[]
             for ordinal,score in ranked[:limit]:
                 item=all_rows[ordinal]
-                results.append(CitationCandidate(item['asset_id'],item['resource_uri'],quote=item['text'][:1200],locator={'chunk_id':item['chunk_id']},score=score))
+                results.append(CitationCandidate(item['asset_id'],item['resource_uri'],quote='' if self.multimodal and self._is_image(source_assets[item['asset_id']]) else item['text'][:1200],locator={'chunk_id':item['chunk_id']},score=score))
             return tuple(results)
         except RetrievalIndexNotReady:raise
         except Exception as error:
