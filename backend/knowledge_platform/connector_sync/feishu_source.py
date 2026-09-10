@@ -9,6 +9,8 @@ from collections import deque
 from dataclasses import dataclass
 import json
 import re
+import hashlib
+from pathlib import PurePath
 from typing import Any
 
 from .feishu_blocks import convert_feishu_blocks_to_markdown
@@ -54,6 +56,20 @@ class FeishuEntry:
     path: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class FeishuMedia:
+    token: str
+    block_id: str
+    filename: str
+    content: bytes
+    mime: str
+    relative_path: str
+
+    @property
+    def mime_type(self) -> str:
+        return self.mime
+
+
 @dataclass(frozen=True)
 class FeishuDocument:
     revision: str
@@ -62,6 +78,7 @@ class FeishuDocument:
     markdown: bytes
     warnings: tuple[str, ...]
     attachments: tuple[dict, ...]
+    media: tuple[FeishuMedia, ...] = ()
 
 
 class FeishuSource:
@@ -142,18 +159,90 @@ class FeishuSource:
             return None
         blocks = await self.api.list_docx_blocks(document_id=entry.object_token, document_revision_id=revision)
         converted = convert_feishu_blocks_to_markdown(blocks)
+        if len(converted.assets) > 128:
+            raise FeishuSourceError('Docx media attachment count exceeds 128')
+        media_tokens = list(dict.fromkeys(str(asset.get('token') or '') for asset in converted.assets))
+        if any(not item for item in media_tokens):
+            raise FeishuSourceError('Docx media attachment token is missing')
+        media = []
+        markdown = converted.markdown
+        if media_tokens:
+            try:
+                downloaded = await self.api.download_media_assets(file_tokens=media_tokens,
+                    max_bytes_each=8 * 1024 * 1024, max_total_bytes=32 * 1024 * 1024)
+            except Exception as exc:
+                raise FeishuSourceError('Docx media download failed') from exc
+            if not isinstance(downloaded, dict):
+                raise FeishuSourceError('Docx media download response is invalid')
+            replacements = {}
+            total = 0
+            for asset in converted.assets:
+                media_token = str(asset.get('token') or '')
+                block_id = str(asset.get('block_id') or '')
+                filename = str(asset.get('filename') or f'feishu-media-{block_id}.bin')
+                payload = downloaded.get(media_token)
+                if not isinstance(payload, tuple) or len(payload) != 3:
+                    raise FeishuSourceError('Docx media download is incomplete')
+                content, mime, _provider_name = payload
+                if not isinstance(content, bytes) or not isinstance(mime, str):
+                    raise FeishuSourceError('Docx media payload is invalid')
+                if len(content) > 8 * 1024 * 1024 or total + len(content) > 32 * 1024 * 1024:
+                    raise FeishuSourceError('Docx media exceeds its size budget')
+                total += len(content)
+                digest = hashlib.sha256(f'{block_id}\0{media_token}'.encode()).hexdigest()[:16]
+                path = str(asset.get('relative_path') or _media_path(filename, digest))
+                media.append(FeishuMedia(media_token, block_id, filename, content, mime, path))
+                if not asset.get('relative_path'):
+                    replacements.setdefault(filename, []).append(path)
+            for filename, paths in replacements.items():
+                marker = f'./assets/{_quote(filename)}'
+                for path in paths:
+                    markdown = markdown.replace(marker, f'./{path}', 1)
         # Preserve the exact revision requested, even if the remote head changes
         # while paginating. The API client pins document_revision_id on all pages.
         raw = json.dumps({'document':metadata, 'blocks':blocks}, ensure_ascii=False, sort_keys=True).encode()
         return FeishuDocument(str(revision), str(metadata.get('title') or entry.title)[:500], raw,
-                              converted.markdown.encode(), tuple(converted.warnings), tuple(converted.assets))
+                              markdown.encode(), tuple(converted.warnings), tuple(converted.assets), tuple(media))
+
+    async def drive_document(self, entry: FeishuEntry) -> FeishuDocument:
+        if entry.kind != 'file':
+            raise FeishuSourceError('Entry is not a Drive file')
+        suffix = PurePath(entry.title).suffix.lower()
+        if suffix not in {'.md', '.markdown', '.txt', '.pdf'}:
+            raise FeishuSourceError('Drive file type is not supported')
+        try:
+            payload = await self.api.download_drive_file(file_token=entry.object_token, max_bytes=8 * 1024 * 1024)
+        except Exception as exc:
+            raise FeishuSourceError('Drive file download failed') from exc
+        if not isinstance(payload, tuple) or len(payload) != 3 or not isinstance(payload[0], bytes):
+            raise FeishuSourceError('Drive file download response is invalid')
+        content = payload[0]
+        if suffix == '.pdf':
+            return FeishuDocument(entry.object_token, entry.title[:500], content, b'',
+                ('PDF parsing is deferred to the sync layer',), (), ())
+        try:
+            text = content.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise FeishuSourceError('Drive text file is not valid UTF-8') from exc
+        return FeishuDocument(entry.object_token, entry.title[:500], content, text.encode(), (), (), ())
 
     async def schema(self, entry: FeishuEntry):
         from .bitable_schema import normalize_schema
-        if entry.kind!='bitable_table' or self.bitable_tables is None:
+        if entry.kind != 'bitable_table' or self.bitable_tables is None:
             raise FeishuSourceError('Bitable schema requires explicitly configured tables')
-        table_id=entry.external_id.rsplit(':',1)[-1]
+        table_id = entry.external_id.rsplit(':', 1)[-1]
         if table_id not in self.bitable_tables:
             raise FeishuSourceError('Bitable table is outside the configured scope')
-        fields=await self.api.list_bitable_fields(app_token=entry.object_token,table_id=table_id)
-        return normalize_schema(entry.object_token,table_id,entry.title,self.bitable_tables[table_id],fields)
+        fields = await self.api.list_bitable_fields(app_token=entry.object_token, table_id=table_id)
+        return normalize_schema(entry.object_token, table_id, entry.title, self.bitable_tables[table_id], fields)
+
+
+def _quote(value: str) -> str:
+    from urllib.parse import quote
+    return quote(value)
+
+
+def _media_path(filename: str, digest: str) -> str:
+    name = PurePath(filename).name.replace('\\', '_').replace('/', '_')
+    name = re.sub(r'[^A-Za-z0-9._ -]', '_', name).strip(' .') or 'attachment.bin'
+    return f'assets/{PurePath(name).stem or "attachment"}--{digest}{PurePath(name).suffix}'

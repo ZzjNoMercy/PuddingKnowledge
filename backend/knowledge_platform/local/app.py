@@ -83,7 +83,8 @@ def _build_app(
         search=CatalogSearchService(catalog),
         asset_read=asset_read,
         derivatives=AssetDerivativeService(
-            catalog=catalog, asset_read=asset_read, bindings=derivative_bindings
+            catalog=catalog, asset_read=asset_read, bindings=derivative_bindings,
+            derivative_resolver=feishu.derivative_targets if feishu is not None else None
         ),
         document=document,
         wiki=wiki,

@@ -142,6 +142,7 @@ class FeishuSyncService:
                         if old and (old.connector_id,old.space_id,old.external_id)!=(connector_id,space_id,entry.external_id):
                             raise FeishuSyncError('Source identity collision')
                         previous_revision=old.revision if (old and old.status=='ready' and old.asset_id and mode=='incremental'
+                            and old.metadata_json.get('media_version')==1 and old.metadata_json.get('parser_config')==binding_config.get('parser')
                             and old.external_type==entry.kind and old.metadata_json.get('object_token')==entry.object_token) else None
                         previous_asset=old.asset_id if old else None
                         if previous_revision:
@@ -150,12 +151,25 @@ class FeishuSyncService:
                                 raise FeishuSyncError('Source Asset binding is inconsistent')
                             # A revision fast path is only valid when owned bytes still exist.
                             self.objects.read(asset.content_digest)
-                    document=None; raw_digest=None; content_digest=None
+                            for media_id in old.metadata_json.get('published_media_ids',[]):
+                                media=session.get(KnowledgeAsset,media_id)
+                                if not media or media.space_id!=space_id or media.metadata_json.get('source_item_id')!=item_id:
+                                    raise FeishuSyncError('Media Asset binding is inconsistent')
+                                self.objects.read(media.content_digest)
+                    document=None; raw_digest=None; content_digest=None; staged_media=(); drive_original=None
+                    is_drive_file=entry.kind=='file' and Path(entry.title).suffix.lower() in {'.pdf','.md','.markdown','.txt'}
                     if entry.kind=='docx':
                         document=await source.document(entry,previous_revision=previous_revision)
                         if document is not None:
+                            from knowledge_platform.local.feishu_media import stage_document
+                            document, staged_media = await stage_document(self.objects, space=space_id, item=item_id, document=document, parser_config=binding_config.get('parser'))
                             raw_digest=self.objects.put(document.raw)
                             content_digest=self.objects.put(document.markdown)
+                    if is_drive_file:
+                        from knowledge_platform.local.feishu_media import stage_drive
+                        document=await source.drive_document(entry)
+                        document,drive_original,staged_media=await stage_drive(self.objects,space=space_id,item=item_id,
+                            document=document,parser_config=binding_config.get('parser'))
                     with Session(self.engine) as session, session.begin():
                         self._fence(session,run_id,owner,connector_id,space_id,fingerprint)
                         item=session.get(KnowledgeSourceItem,item_id)
@@ -168,7 +182,16 @@ class FeishuSyncService:
                         item.title=entry.title;item.path_json=list(entry.path)
                         item.last_seen_sync_run_id=run_id;item.updated_at=utcnow()
                         metadata={'object_token':entry.object_token,'selection_fingerprint':selection_fingerprint}
-                        if entry.kind=='docx':
+                        if is_drive_file:
+                            from knowledge_platform.local.feishu_media import publish_media
+                            publish_media(session,staged_media)
+                            unchanged=item.asset_id==drive_original.id and item.status=='ready'
+                            item.status='ready';item.asset_id=drive_original.id;item.revision=document.revision
+                            item.content_digest=drive_original.digest
+                            metadata.update(published_media_ids=[a.id for a in staged_media],media_version=1,
+                                parser_config=binding_config.get('parser'),parse_status='ready' if drive_original.metadata.get('derivatives') else 'not_configured')
+                            stats['unchanged' if unchanged else 'changed']+=1
+                        elif entry.kind=='docx':
                             item.status='ready'
                             if document is not None:
                                 for kind,body_digest,mime in [('raw_snapshot',raw_digest,'application/json'),('document',content_digest,'text/markdown')]:
@@ -187,6 +210,11 @@ class FeishuSyncService:
                                 item.revision=document.revision;item.content_digest=content_digest;item.title=document.title
                                 metadata['warnings']=list(document.warnings)
                                 metadata['attachments']=list(document.attachments)
+                                from knowledge_platform.local.feishu_media import publish_media
+                                publish_media(session, staged_media)
+                                metadata['published_media_ids']=[a.id for a in staged_media]
+                                metadata['media_version']=1
+                                metadata['parser_config']=binding_config.get('parser')
                                 stats['changed']+=1
                             else:
                                 metadata={**(item.metadata_json or {}),**metadata}

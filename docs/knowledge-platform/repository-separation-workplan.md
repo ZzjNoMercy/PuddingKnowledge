@@ -141,3 +141,24 @@ not been run.
 2026-09-10 Feishu 用户 OAuth：独立服务新增显式 auth_type=user、配置回调 allowlist 和 scope、一次性 PKCE 授权/回调、持久用户 grant、版本化刷新和明确的本地授权撤销。State hash/会话归属/redirect digest 在 Catalog，verifier 与全部token在自有Vault；网络前持久化 exchanging/refreshing，远端交换期间不持有数据库事务。真实进程在 callback/refresh 中 SIGKILL 后分别拒绝code重放和旧refresh重试；未知旋转结果明确 needs_reauth。撤销递增授权generation，抢占旧callback/refresh/sync提交。user与tenant必须显式配置，不能静默切换。
 
 验证：最终相关回归 64 passed；安装包在仓库外真实进程 3 passed，覆盖授权、401后单次刷新、无环境密钥重启、撤销后拒绝访问、callback/refresh SIGKILL。发行边界/打包验证通过；Luna对抗审查反例覆盖wrong principal、过期state、redirect限制、scope缺失、并发force refresh和撤销抢占。此前HTTP fixture未读取POST body导致TCP reset，修正fixture并补安全传输异常包装后回归通过。远程CI和真实生产飞书授权尚未执行。本地撤销明确 provider_revocation=false，不宣称远端同意已撤销；旧加密token留存待GC。整体缺口仍包括生产会话认证、远端撤销、Lark/附件/Drive/Bitable完整处理、索引和Console、Semantic与import/export/index、升级回滚及生产连续性。
+
+### Feishu media / local PDF derivative closure (2026-09-10)
+
+- Added authenticated, bounded Docx media and Drive text/PDF downloads, immutable
+  parent-owned media publication, distinct original/normalized/image Assets, and
+  dynamic authorized derivative reads. Parent replacement/deletion and connector
+  disable invalidate stale reads; failed parsing keeps the old publication.
+- MinerU is an explicit Knowledge-owned loopback HTTP adapter, with cancellable
+  whole-request timeouts, bounded ZIP/JSON output, safe paths and AST-validated
+  image rewrites. No Claw global config, shared output scan, or scratch cleanup.
+- Fixed actual integration failures: per-file versus combined budget mismatch,
+  OAuth transport compatibility, Bitable method preservation, same-name media
+  references, incomplete HTTP bodies, parse output identity drift, and MCP
+  derivative URI Space mismatch.
+- Related backend regression: 171 passed. Non-editable installed package tested
+  from outside the checkout: 14 passed, including real HTTP/standalone process
+  media parsing, image/derivative REST+MCP reads, restart, Bitable and OAuth.
+- Remaining: general/cloud ParserRegistry and remote task recovery, Office input,
+  full indexing/semantic lifecycle, production authentication and stateful release
+  gates. This does not complete the full repository separation goal or activate
+  production. See persistent-local-runtime.md for explicit supported scope.

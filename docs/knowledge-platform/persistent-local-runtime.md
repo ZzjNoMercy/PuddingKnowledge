@@ -358,3 +358,52 @@ Lark, resumable per-item sync, real Semantic processing, import/export/index,
 stateful upgrade/rollback and production continuity. Dedicated legacy preview or
 relation CRUD URLs are not implemented; the current Console uses the canonical
 single-page query and atomic policy update APIs.
+
+### Owned Feishu media and local PDF parsing
+
+Docx sync now downloads its declared image/file attachments from the authenticated,
+fixed Feishu API origin. Individual files are bounded at 8 MiB; one document is
+bounded at 128 attachments and 32 MiB combined. No temporary provider URL becomes
+a Catalog resource. Attachment names do not determine identity: block and token
+identity disambiguate repeated filenames. All bytes are content-addressed in the
+Platform state directory before the parent publication transaction commits.
+
+A source may explicitly enable the local MinerU parser:
+
+```json
+"parser": {
+  "id": "mineru_local",
+  "endpoint": "http://127.0.0.1:8000",
+  "timeout": 60
+}
+```
+
+This is a field of the source in the existing `--feishu-config` file. The endpoint
+must be an explicit loopback HTTP URL; timeout is bounded at 300 seconds. It is
+owned by Knowledge and never read from a Harness/Claw home or provider settings.
+The parser uses `/file_parse`, multipart `files`, `return_images=true`, and
+`response_format_zip=true`. It accepts a bounded ZIP containing one Markdown file
+and declared images, or an explicit top-level JSON Markdown response. Derived
+output per document is bounded at 512 files and 64 MiB combined. Unsafe ZIP
+paths, links, ambiguous documents, missing images, oversized output, redirects,
+and incomplete downloads fail the publication. It never scans or cleans a shared
+MinerU output directory.
+
+PDF originals and normalized Markdown have separate Asset identities, MIME types,
+bytes, and digests. The original exposes `normalized_markdown` through the existing
+Asset derivative list/read endpoints. Parsed images are owned Assets referenced
+with stable `knowledge://` URIs. Parent replacement, source deletion, and connector
+disablement invalidate previous attachment/derivative reads. A failed download or
+parse preserves the previous publication; partially staged objects do not become
+readable. Parser configuration changes bypass the Docx revision fast path.
+
+Drive `.md`, `.markdown`, `.txt`, and `.pdf` files are downloaded under the same
+8 MiB file bound. Their revision is computed from downloaded bytes. Text must be
+valid UTF-8. PDFs without a configured parser retain their original bytes and
+explicitly report `parse_status=not_configured`; no normalized derivative is
+invented. Incremental Drive checks currently download again to verify content.
+
+This phase supplies one explicit local parser route. Cloud ParserRegistry routing,
+remote parse-job checkpoints, Office formats, larger-file support, index activation,
+and a production MinerU deployment remain separate work. Tests use a real local
+HTTP protocol fixture, not an installed production MinerU service.

@@ -8,6 +8,7 @@ sync worker can fetch them through authenticated, size-limited endpoints.
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -100,6 +101,22 @@ class FeishuBlockConverter:
         self.by_id = {str(block["block_id"]): block for block in self.blocks}
         self.assets: list[dict[str, str]] = []
         self.warnings: list[str] = []
+        self._duplicate_names = self._find_duplicate_names()
+
+    def _find_duplicate_names(self) -> set[str]:
+        names = []
+        for block in self.blocks:
+            if int(block.get("block_type") or 0) == 27:
+                names.append(f"feishu-image-{block.get('block_id')}.bin")
+            elif int(block.get("block_type") or 0) == 23:
+                payload = block.get("file") if isinstance(block.get("file"), dict) else {}
+                names.append(str(payload.get("name") or f"feishu-file-{block.get('block_id')}"))
+        return {name for name in names if names.count(name) > 1}
+
+    @staticmethod
+    def _relative_path(filename: str, block_id: str, token: str) -> str:
+        digest = hashlib.sha256(f"{block_id}\0{token}".encode()).hexdigest()[:16]
+        return f"assets/{filename}--{digest}"
 
     def convert(self) -> FeishuMarkdownResult:
         child_ids = {str(child) for block in self.blocks for child in (block.get("children") or [])}
@@ -158,15 +175,25 @@ class FeishuBlockConverter:
             token = str(image.get("token") or "")
             if token:
                 filename = f"feishu-image-{block_id}.bin"
-                self.assets.append({"type": "image", "token": token, "block_id": block_id, "filename": filename})
-                current.append(f"![飞书图片](./assets/{quote(filename)})")
+                asset = {"type": "image", "token": token, "block_id": block_id, "filename": filename}
+                path = f"assets/{filename}"
+                if filename in self._duplicate_names:
+                    path = self._relative_path(filename, block_id, token)
+                    asset["relative_path"] = path
+                self.assets.append(asset)
+                current.append(f"![飞书图片](./{path if path.startswith('assets/') else 'assets/' + path})")
         elif block_type == 23:
             file_payload = block.get("file") if isinstance(block.get("file"), dict) else {}
             token = str(file_payload.get("token") or "")
             name = str(file_payload.get("name") or f"feishu-file-{block_id}")
             if token:
-                self.assets.append({"type": "file", "token": token, "block_id": block_id, "filename": name})
-                current.append(f"[{_escape_text(name)}](./assets/{quote(name)})")
+                asset = {"type": "file", "token": token, "block_id": block_id, "filename": name}
+                path = f"assets/{quote(name)}"
+                if name in self._duplicate_names:
+                    path = self._relative_path(name, block_id, token)
+                    asset["relative_path"] = path
+                self.assets.append(asset)
+                current.append(f"[{_escape_text(name)}](./{path})")
         elif block_type == 31:
             current.extend(self._render_table(block, visited=visited))
             children = []  # consumed by table renderer

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from knowledge_contracts import (
     BlobReadRequest,
@@ -271,6 +271,7 @@ class AssetDerivativeService:
         catalog: CatalogQueryService,
         asset_read: AssetReadService,
         bindings: Mapping[str, tuple[str, ...]],
+        derivative_resolver: Callable[[str], Mapping[str, str]] | None = None,
     ) -> None:
         self._catalog = catalog
         self._asset_read = asset_read
@@ -278,6 +279,7 @@ class AssetDerivativeService:
             str(asset_id): tuple(str(kind) for kind in kinds)
             for asset_id, kinds in bindings.items()
         }
+        self._derivative_resolver = derivative_resolver
 
     @staticmethod
     def _uri(asset: Mapping[str, object], kind: str) -> str:
@@ -297,6 +299,40 @@ class AssetDerivativeService:
             return _error(correlation, QueryErrorCode.INTERNAL_ERROR, "Catalog asset metadata is malformed"), None
         return metadata, asset
 
+    def _resolved_bindings(
+        self, *, asset_id: str, correlation: Correlation
+    ) -> tuple[dict[str, str] | None, QueryResult | None]:
+        """Return an immutable resolver snapshot, failing closed on malformed host state."""
+
+        if self._derivative_resolver is None:
+            return {}, None
+        try:
+            raw = self._derivative_resolver(asset_id)
+        except Exception:
+            return None, _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative binding is unavailable")
+        if not isinstance(raw, Mapping):
+            return None, _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative binding is invalid")
+        resolved: dict[str, str] = {}
+        for kind, target_id in raw.items():
+            if (
+                not isinstance(kind, str)
+                or not _OPAQUE_ID_RE.fullmatch(kind)
+                or not isinstance(target_id, str)
+                or not _OPAQUE_ID_RE.fullmatch(target_id)
+            ):
+                return None, _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative binding is invalid")
+            resolved[kind] = target_id
+        return resolved, None
+
+    @staticmethod
+    def _asset_identity(asset: Mapping[str, object]) -> tuple[str, str, str, str]:
+        return (
+            str(asset.get("space_id") or ""),
+            str(asset.get("source_uri") or ""),
+            str(asset.get("revision") or asset.get("content_digest") or ""),
+            str(asset.get("content_digest") or ""),
+        )
+
     def list(
         self, *, principal: Principal, correlation: Correlation, asset_id: str
     ) -> QueryResult:
@@ -308,17 +344,40 @@ class AssetDerivativeService:
         revision = _valid_digest(asset.get("revision")) or _valid_digest(asset.get("content_digest"))
         if revision is None:
             return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset revision is unavailable")
-        derivatives = [
-            {
+        resolved, resolve_error = self._resolved_bindings(asset_id=asset_id, correlation=correlation)
+        if resolve_error is not None:
+            return resolve_error
+        derivatives = []
+        for kind in self._bindings.get(asset_id, ()):
+            derivatives.append({
                 "asset_id": asset_id,
                 "kind": kind,
                 "resource_uri": self._uri(asset, kind),
                 "revision": revision,
                 "content_digest": _valid_digest(asset.get("content_digest")) or revision,
                 "mime_type": str(asset.get("mime_type") or "application/octet-stream"),
-            }
-            for kind in self._bindings.get(asset_id, ())
-        ]
+            })
+        for kind, target_id in (resolved or {}).items():
+            target_metadata, target = self._metadata(
+                principal=principal, correlation=correlation, asset_id=target_id
+            )
+            if target_metadata.status == "error" or target is None:
+                return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative target is unavailable")
+            if str(target.get("space_id") or "") != str(asset.get("space_id") or ""):
+                return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative crosses Space boundary")
+            target_revision = _valid_digest(target.get("revision")) or _valid_digest(target.get("content_digest"))
+            target_digest = _valid_digest(target.get("content_digest")) or target_revision
+            if target_revision is None or target_digest is None:
+                return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative target revision is unavailable")
+            derivatives = [item for item in derivatives if item["kind"] != kind]
+            derivatives.append({
+                "asset_id": asset_id,
+                "kind": kind,
+                "resource_uri": self._uri(asset, kind),
+                "revision": target_revision,
+                "content_digest": target_digest,
+                "mime_type": str(target.get("mime_type") or "application/octet-stream"),
+            })
         return QueryResult(
             status="ok",
             trace_id=correlation.trace_id,
@@ -344,9 +403,24 @@ class AssetDerivativeService:
             return metadata
         if type(kind) is not str or not _OPAQUE_ID_RE.fullmatch(kind):
             return _error(correlation, QueryErrorCode.INVALID_REQUEST, "derivative kind is invalid")
-        if kind not in self._bindings.get(asset_id, ()):
+        resolved, resolve_error = self._resolved_bindings(asset_id=asset_id, correlation=correlation)
+        if resolve_error is not None:
+            return resolve_error
+        target_id = (resolved or {}).get(kind)
+        if target_id is None and kind not in self._bindings.get(asset_id, ()):
             return _error(correlation, QueryErrorCode.NOT_FOUND, "Asset derivative was not found")
-        base_uri = str(asset.get("source_uri") or "")
+        original_identity = self._asset_identity(asset)
+        if target_id is None:
+            target_id = asset_id
+        target_metadata, target = self._metadata(
+            principal=principal, correlation=correlation, asset_id=target_id
+        )
+        if target_metadata.status == "error" or target is None:
+            return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative target is unavailable")
+        if str(target.get("space_id") or "") != str(asset.get("space_id") or ""):
+            return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Asset derivative crosses Space boundary")
+        target_identity = self._asset_identity(target)
+        base_uri = str(target.get("source_uri") or "")
         result = await self._asset_read.read(
             principal=principal,
             correlation=correlation,
@@ -357,6 +431,27 @@ class AssetDerivativeService:
         )
         if result.status == "error":
             return result
+        after_metadata, after_asset = self._metadata(
+            principal=principal, correlation=correlation, asset_id=asset_id
+        )
+        after_resolved, after_resolve_error = self._resolved_bindings(asset_id=asset_id, correlation=correlation)
+        if (
+            after_resolve_error is not None
+            or after_metadata.status == "error"
+            or after_asset is None
+            or self._asset_identity(after_asset) != original_identity
+            or after_resolved != resolved
+        ):
+            return _error(correlation, QueryErrorCode.INTERNAL_ERROR, "Asset derivative binding changed during read")
+        target_after_metadata, target_after = self._metadata(
+            principal=principal, correlation=correlation, asset_id=target_id
+        )
+        if (
+            target_after_metadata.status == "error"
+            or target_after is None
+            or self._asset_identity(target_after) != target_identity
+        ):
+            return _error(correlation, QueryErrorCode.INTERNAL_ERROR, "Asset derivative target changed during read")
         derivative_uri = self._uri(asset, kind)
         try:
             payload = dict(result.data)

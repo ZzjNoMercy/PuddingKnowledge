@@ -819,6 +819,8 @@ class McpQueryAdapter:
         if result.get("status") != "ok":
             return {"contents": [], "structuredContent": result}
         data = result.get("data", {})
+        if data.get("resource_uri") != resource_uri:
+            return {"contents": [], "structuredContent": _error(correlation, QueryErrorCode.INVALID_REQUEST, "Resource URI does not match its Asset binding").to_dict()}
         return {
             "contents": [
                 {

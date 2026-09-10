@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 from urllib.parse import urlencode, urlsplit
 
-import urllib3
+import httpx
 
 
 DEFAULT_ENDPOINT = "https://open.feishu.cn"
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{1,4096}$")
 _PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")
+_MAX_BINARY_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class FeishuApiError(RuntimeError):
@@ -50,39 +51,32 @@ class AsyncHttpTransport(Protocol):
     ) -> HttpResponse: ...
 
 
-class _Urllib3Transport:
-    def __init__(self) -> None:
-        self._pool = urllib3.PoolManager(cert_reqs="CERT_REQUIRED")
-
+class _HttpxTransport:
     async def request(self, method: str, url: str, *, headers: Mapping[str, str], body: bytes | None,
                       timeout_seconds: float) -> HttpResponse:
-        def perform() -> HttpResponse:
-            try:
-                response = self._pool.request(
-                    method, url, headers=dict(headers), body=body,
-                    timeout=urllib3.Timeout(connect=timeout_seconds, read=timeout_seconds),
-                    redirect=False, preload_content=False, retries=False,
-                )
-            except Exception as exc:  # urllib3 has several transport exception types
-                raise FeishuApiError("无法连接飞书 OpenAPI。") from exc
-            try:
-                chunks: list[bytes] = []
-                total = 0
-                for chunk in response.stream(64 * 1024, decode_content=True):
-                    total += len(chunk)
-                    if total > 8 * 1024 * 1024:
-                        raise FeishuApiError("飞书 OpenAPI 响应超过大小上限。", status_code=response.status)
-                    chunks.append(chunk)
-                return HttpResponse(response.status, dict(response.headers), b"".join(chunks))
-            except (urllib3.exceptions.HTTPError, OSError):
-                raise FeishuApiError("飞书 OpenAPI 响应读取失败。") from None
-            finally:
-                response.close()
-
         try:
-            return await asyncio.wait_for(asyncio.to_thread(perform), timeout=timeout_seconds * 2 + 1)
+            async with asyncio.timeout(timeout_seconds):
+                timeout = httpx.Timeout(timeout_seconds)
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+                    async with client.stream(method, url, headers=dict(headers), content=body) as response:
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > _MAX_BINARY_RESPONSE_BYTES:
+                                raise FeishuApiError("飞书 OpenAPI 响应超过大小上限。", status_code=response.status_code)
+                            chunks.append(chunk)
+                        return HttpResponse(response.status_code, dict(response.headers), b"".join(chunks))
         except asyncio.TimeoutError as exc:
             raise FeishuApiError("飞书 OpenAPI 请求超时。") from exc
+        except FeishuApiError:
+            raise
+        except httpx.HTTPError as exc:
+            raise FeishuApiError("无法连接飞书 OpenAPI。") from exc
+
+
+# Private compatibility name retained for local OAuth/runtime imports.
+_Urllib3Transport = _HttpxTransport
 
 
 def _endpoint(value: str | None, *, explicit: bool) -> str:
@@ -130,7 +124,7 @@ class FeishuApiClient:
             raise ValueError("pagination and response limits are invalid")
         self.endpoint = _endpoint(endpoint, explicit=endpoint is not None)
         self.access_token = _token(access_token)
-        self.transport = transport or _Urllib3Transport()
+        self.transport = transport or _HttpxTransport()
         self.timeout_seconds = float(timeout_seconds)
         self.max_pages = max_pages
         self.max_response_bytes = max_response_bytes
@@ -179,19 +173,53 @@ class FeishuApiClient:
     async def _request_bytes(self, method: str, path: str, *, max_bytes: int) -> tuple[bytes, str, str]:
         if not path.startswith("/open-apis/") or "?" in path or "#" in path:
             raise ValueError("invalid Feishu API path")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_BINARY_RESPONSE_BYTES:
+            raise ValueError("max_bytes exceeds the bounded Feishu binary response limit")
         try:
-            response = await self.transport.request(method.upper(), self.endpoint + path,
-                                                     headers={"Authorization": f"Bearer {self.access_token}"},
-                                                     body=None, timeout_seconds=self.timeout_seconds)
+            response = await asyncio.wait_for(
+                self.transport.request(method.upper(), self.endpoint + path,
+                                       headers={"Authorization": f"Bearer {self.access_token}", "Accept": "application/octet-stream",
+                                                "Accept-Encoding": "identity"},
+                                       body=None, timeout_seconds=self.timeout_seconds),
+                timeout=self.timeout_seconds * 2 + 1,
+            )
         except FeishuApiError:
             raise
+        except asyncio.TimeoutError as exc:
+            raise FeishuApiError("飞书二进制文件下载超时。") from exc
         except Exception as exc:
             raise FeishuApiError("无法连接飞书 OpenAPI。") from exc
         if response.status_code >= 300:
             raise FeishuApiError("飞书云盘文件下载失败。", status_code=response.status_code)
-        if len(response.body) > min(max_bytes, self.max_response_bytes):
-            raise FeishuApiError("飞书云盘文件超过允许的大小上限。", status_code=response.status_code)
         headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+        # The transport exposes the decoded body, while Content-Length describes
+        # wire bytes for compressed responses. Reject compression so truncation
+        # checks remain meaningful and bounded.
+        encoding = headers.get("content-encoding", "").strip().lower()
+        if encoding and encoding != "identity":
+            raise FeishuApiError("飞书文件下载不接受压缩响应。", status_code=response.status_code)
+        content_type = headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
+        if content_type == "application/json" or content_type.endswith("+json"):
+            raise FeishuApiError("飞书文件下载返回了 JSON，而不是二进制内容。", status_code=response.status_code)
+        if content_type == "application/octet-stream" and response.body.lstrip()[:1] == b"{":
+            try:
+                maybe_json = json.loads(response.body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                maybe_json = None
+            if isinstance(maybe_json, dict) and any(key in maybe_json for key in ("code", "msg", "error", "error_description")):
+                raise FeishuApiError("飞书文件下载返回了 JSON，而不是二进制内容。", status_code=response.status_code)
+        expected_length = headers.get("content-length")
+        if expected_length is not None:
+            try:
+                declared_length = int(expected_length)
+            except (TypeError, ValueError) as exc:
+                raise FeishuApiError("飞书文件下载长度无效。", status_code=response.status_code) from exc
+            if declared_length < 0 or declared_length != len(response.body):
+                raise FeishuApiError("飞书文件下载响应不完整。", status_code=response.status_code)
+            if declared_length > max_bytes:
+                raise FeishuApiError("飞书文件超过允许的大小上限。", status_code=response.status_code)
+        if len(response.body) > max_bytes:
+            raise FeishuApiError("飞书云盘文件超过允许的大小上限。", status_code=response.status_code)
         return response.body, headers.get("content-type", "application/octet-stream").split(";", 1)[0], headers.get("content-disposition", "")
 
     @staticmethod
@@ -246,11 +274,55 @@ class FeishuApiClient:
         return await self._paginate("/open-apis/drive/v1/files", item_key="files", page_size=200,
                                     params={"folder_token": folder_token})
 
-    async def download_drive_file(self, *, file_token: str, max_bytes: int = 200 * 1024 * 1024) -> tuple[bytes, str, str]:
+    async def download_drive_file(self, *, file_token: str, max_bytes: int = _MAX_BINARY_RESPONSE_BYTES) -> tuple[bytes, str, str]:
         if max_bytes < 1:
             raise ValueError("max_bytes must be positive")
         return await self._request_bytes("GET", f"/open-apis/drive/v1/files/{_path_token('file_token', file_token)}/download",
                                          max_bytes=max_bytes)
+
+    async def download_media_file(self, *, file_token: str, max_bytes: int = _MAX_BINARY_RESPONSE_BYTES) -> tuple[bytes, str, str]:
+        """Download one Docx media file from Feishu's fixed API origin.
+
+        The media token is path-validated and the request never follows a
+        redirect, so provider-controlled URLs cannot redirect the bearer
+        token to another host.  Callers must enforce any smaller aggregate
+        budget across multiple media references themselves.
+        """
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        return await self._request_bytes("GET", f"/open-apis/drive/v1/medias/{_path_token('file_token', file_token)}/download",
+                                         max_bytes=max_bytes)
+
+    download_media = download_media_file
+
+    async def download_media_assets(
+        self,
+        *,
+        file_tokens: list[str],
+        max_bytes_each: int = _MAX_BINARY_RESPONSE_BYTES,
+        max_total_bytes: int = _MAX_BINARY_RESPONSE_BYTES,
+    ) -> dict[str, tuple[bytes, str, str]]:
+        """Download deduplicated media tokens under per-file and total budgets."""
+        if type(max_bytes_each) is not int or not 1 <= max_bytes_each <= _MAX_BINARY_RESPONSE_BYTES:
+            raise ValueError("max_bytes_each must be positive")
+        if type(max_total_bytes) is not int or not 1 <= max_total_bytes <= 32 * 1024 * 1024:
+            raise ValueError("max_total_bytes must be positive")
+        tokens = list(dict.fromkeys(token for token in file_tokens if token))
+        result: dict[str, tuple[bytes, str, str]] = {}
+        total = 0
+        for token in tokens:
+            remaining = max_total_bytes - total
+            if remaining <= 0:
+                raise FeishuApiError("飞书素材累计大小超过安全上限。")
+            payload = await self.download_media_file(
+                file_token=token,
+                max_bytes=min(max_bytes_each, remaining),
+            )
+            total += len(payload[0])
+            if total > max_total_bytes:
+                raise FeishuApiError("飞书素材累计大小超过安全上限。")
+            result[token] = payload
+        return result
 
     async def get_node(self, *, node_token: str) -> dict[str, Any]:
         data = self._data(await self._request("GET", "/open-apis/wiki/v2/spaces/get_node",

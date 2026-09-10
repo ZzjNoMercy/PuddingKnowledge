@@ -31,7 +31,7 @@ def load_feishu_config(path: Path):
         raise ValueError('Invalid Feishu sources')
     seen=set()
     for item in raw['sources']:
-        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint','auth_type','oauth_redirect_uris','oauth_scopes','bitable'}:
+        if not isinstance(item,dict) or not {'id','name','selection','app_id','app_secret_env'}<=set(item) or set(item)-{'id','name','selection','app_id','app_secret_env','endpoint','auth_type','oauth_redirect_uris','oauth_scopes','bitable','parser'}:
             raise ValueError('Invalid Feishu source fields')
         if not isinstance(item['id'],str) or not _ID.fullmatch(item['id']) or item['id'] in seen:
             raise ValueError('Invalid Feishu source identity')
@@ -60,6 +60,12 @@ def load_feishu_config(path: Path):
             normalize_policy(item.get('bitable',{'tables':[],'relations':[]}))
         elif 'bitable' in item:
             raise ValueError('Bitable policy belongs only to a Bitable source')
+        if 'parser' in item:
+            from knowledge_platform.parsers.mineru import MinerUClient
+            parser=item['parser']
+            if not isinstance(parser,dict) or set(parser)-{'id','endpoint','timeout'} or parser.get('id')!='mineru_local' or not isinstance(parser.get('endpoint'),str):
+                raise ValueError('Invalid explicit parser configuration')
+            MinerUClient(parser['endpoint'],timeout=parser.get('timeout',60))
         # Validates the operator-selected origin without issuing any request.
         FeishuApiClient('validation-only',endpoint=item.get('endpoint'))
     return raw
@@ -119,6 +125,10 @@ class LocalFeishuService:
                     from knowledge_platform.local.bitable import normalize_policy
                     connector.config_json={**connector.config_json,'bitable':normalize_policy(previous_config.get('bitable',item.get('bitable',{'tables':[],'relations':[]}))),
                         'bitable_policy_generation':previous_config.get('bitable_policy_generation',0)}
+                if 'parser' in item:
+                    connector.config_json={**connector.config_json,'parser':item['parser']}
+                else:
+                    connector.config_json={k:v for k,v in connector.config_json.items() if k!='parser'}
                 connector.updated_at=utcnow()
         from knowledge_platform.local.feishu_oauth import LocalFeishuOAuth
         self.oauth=LocalFeishuOAuth(self.engine,self.vault,state_root)
@@ -172,7 +182,9 @@ class LocalFeishuService:
             self.bitable._snapshot(item.connector_id,item.metadata_json.get('table_id'))
         elif item.status!='ready':
             raise LookupError('Feishu source is not a document')
-        expected = item.asset_id if asset.kind in {'document','table_schema'} else item.metadata_json.get('raw_asset_id') if asset.kind=='raw_snapshot' else None
+        expected = item.asset_id if asset.kind in {'document','table_schema','original_file'} else item.metadata_json.get('raw_asset_id') if asset.kind=='raw_snapshot' else None
+        if asset.kind in {'attachment','parsed_document','derived_media'}:
+            expected=asset.id if asset.id in item.metadata_json.get('published_media_ids',[]) and asset.metadata_json.get('remote_revision')==item.revision else None
         if expected!=asset.id:
             raise LookupError('Feishu Asset is not the current source binding')
         selection=asdict(FeishuSelection(**connector.config_json['selection']))
@@ -180,6 +192,19 @@ class LocalFeishuService:
         if item.metadata_json.get('selection_fingerprint')!=selection_hash:
             raise LookupError('Feishu source selection changed')
         return asset
+
+    def derivative_targets(self, asset_id):
+        with Session(self.engine) as session:
+            candidate=session.get(KnowledgeAsset,asset_id)
+            if candidate is None or candidate.source_type!='feishu': return {}
+            asset=self._asset(session,asset_id)
+            result={}
+            for kind, target_id in asset.metadata_json.get('derivatives',{}).items():
+                target=self._asset(session,target_id)
+                if target.metadata_json.get('original_asset_id')!=asset_id or target.metadata_json.get('source_item_id')!=asset.metadata_json.get('source_item_id'):
+                    raise LookupError('Derivative ownership is inconsistent')
+                result[kind]=target_id
+            return result
 
     def read_published(self, resource_uri):
         with Session(self.engine) as session:
