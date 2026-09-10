@@ -319,32 +319,40 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
 
     @classmethod
     def _collection_bindings(cls, connection: sqlite3.Connection) -> dict[tuple[str, str, str], dict[str, dict[str, str]]]:
-        if not cls._has_table(connection, "knowledge_collection_bindings"):
-            return {}
         result: dict[tuple[str, str, str], dict[str, dict[str, str]]] = {}
-        for row in connection.execute(
-            "SELECT space_id, collection_id, collection_version, capability, binding_json "
-            "FROM knowledge_collection_bindings ORDER BY space_id, collection_id, collection_version, capability"
-        ):
-            binding = cls._json(row["binding_json"], field="knowledge_collection_bindings.binding_json", default={})
-            if not isinstance(binding, dict) or set(binding) not in ({"asset_id"}, {"dataset_id"}, {"provider_id"}):
-                raise ValueError("Collection provider binding has an invalid shape")
-            key = (str(row["space_id"]), str(row["collection_id"]), str(row["collection_version"]))
-            capability = str(row["capability"])
-            if capability in result.setdefault(key, {}):
-                raise ValueError("Collection provider binding is duplicated")
-            result[key][capability] = {str(k): str(v) for k, v in binding.items()}
+        if cls._has_table(connection, "knowledge_collection_bindings"):
+            for row in connection.execute(
+                "SELECT space_id, collection_id, collection_version, capability, binding_json "
+                "FROM knowledge_collection_bindings ORDER BY space_id, collection_id, collection_version, capability"
+            ):
+                binding = cls._json(row["binding_json"], field="knowledge_collection_bindings.binding_json", default={})
+                if not isinstance(binding, dict) or set(binding) not in ({"asset_id"}, {"dataset_id"}, {"provider_id"}):
+                    raise ValueError("Collection provider binding has an invalid shape")
+                key = (str(row["space_id"]), str(row["collection_id"]), str(row["collection_version"]))
+                capability = str(row["capability"])
+                if capability in result.setdefault(key, {}):
+                    raise ValueError("Collection provider binding is duplicated")
+                result[key][capability] = {str(k): str(v) for k, v in binding.items()}
         # A derived query index must not replace ingestion ownership. Its
         # atomic active generation supplies the effective retrieval binding.
         if cls._has_table(connection, "knowledge_local_vector_indexes"):
+            index_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_local_vector_indexes)")}
+            provider_select = ", provider_id" if "provider_id" in index_columns else ""
             seen = set()
-            for row in connection.execute("SELECT space_id,collection_id,collection_version,capability FROM knowledge_local_vector_indexes WHERE status='active'"):
+            for row in connection.execute(
+                "SELECT space_id,collection_id,collection_version,capability" + provider_select
+                + " FROM knowledge_local_vector_indexes WHERE status='active'"
+            ):
                 key = (str(row["space_id"]), str(row["collection_id"]), str(row["collection_version"]))
                 capability = str(row["capability"])
                 if capability not in {"document_rag_query", "wiki_query"} or (*key, capability) in seen:
                     raise ValueError("Active vector binding is ambiguous")
+                provider_id = (str(row["provider_id"])
+                               if "provider_id" in index_columns else "knowledge_local_vector")
+                if provider_id not in {"knowledge_local_vector", "knowledge_milvus_vector"}:
+                    raise ValueError("Active vector provider is unknown")
                 seen.add((*key, capability))
-                result.setdefault(key, {})[capability] = {"provider_id": "knowledge_local_vector"}
+                result.setdefault(key, {})[capability] = {"provider_id": provider_id}
         return result
 
     @classmethod

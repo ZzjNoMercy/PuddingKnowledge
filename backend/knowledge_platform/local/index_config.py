@@ -3,12 +3,31 @@ from __future__ import annotations
 import json
 import os
 import re
+from urllib.parse import urlsplit
 from pathlib import Path
 
 from knowledge_platform.retrieval.embedding import OpenAICompatibleEmbeddingClient
 
 _ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$')
 _ENV = re.compile(r'^KNOWLEDGE_EMBEDDING_[A-Z0-9_]{1,100}$')
+_MILVUS_ENV = re.compile(r'^KNOWLEDGE_MILVUS_[A-Z0-9_]{1,100}$')
+
+
+def _validate_milvus_endpoint(endpoint: object) -> str:
+    if not isinstance(endpoint, str) or not endpoint or endpoint != endpoint.strip():
+        raise ValueError('Milvus endpoint is invalid')
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError('Milvus endpoint is invalid') from error
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname or any(ord(c) < 33 for c in endpoint) or len(endpoint)>2048:
+        raise ValueError('Milvus endpoint is invalid')
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise ValueError('Milvus endpoint is invalid')
+    if parsed.path not in {'', '/'}:
+        raise ValueError('Milvus endpoint must use the root path')
+    return endpoint
 
 
 def load_index_config(path: Path) -> dict:
@@ -23,8 +42,22 @@ def load_index_config(path: Path) -> dict:
             value[key]=item
         return value
     value=json.loads(raw,object_pairs_hook=unique)
-    if (not isinstance(value,dict) or set(value)!={'version','provider_id','space_ids','embedding','batch_size','max_chars'}
-            or type(value['version']) is not int or value['version']!=1 or value['provider_id']!='knowledge_local_vector'):
+    if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1:
+        raise ValueError('Index configuration fields are invalid')
+    provider_id = value.get('provider_id')
+    if provider_id == 'knowledge_local_vector':
+        if set(value) != {'version','provider_id','space_ids','embedding','batch_size','max_chars'}:
+            raise ValueError('Index configuration fields are invalid')
+    elif provider_id == 'knowledge_milvus_vector':
+        if set(value) != {'version','provider_id','space_ids','embedding','batch_size','max_chars','milvus'}:
+            raise ValueError('Index configuration fields are invalid')
+        milvus = value['milvus']
+        if not isinstance(milvus, dict) or set(milvus) != {'endpoint', 'api_key_env'}:
+            raise ValueError('Milvus configuration is invalid')
+        _validate_milvus_endpoint(milvus['endpoint'])
+        if milvus['api_key_env'] is not None and (not isinstance(milvus['api_key_env'], str) or not _MILVUS_ENV.fullmatch(milvus['api_key_env'])):
+            raise ValueError('Milvus credential reference is invalid')
+    else:
         raise ValueError('Index configuration fields are invalid')
     spaces=value['space_ids']
     if not isinstance(spaces,list) or not 1<=len(spaces)<=1000 or any(not isinstance(s,str) or not _ID.fullmatch(s) for s in spaces) or len(spaces)!=len(set(spaces)):
@@ -51,3 +84,19 @@ def embedding_client(config):
         raise ValueError('Explicit embedding credential environment is missing')
     return OpenAICompatibleEmbeddingClient(endpoint=embedding['endpoint'],model=embedding['model'],
         dimension=embedding['dimension'],batch_size=config['batch_size'],api_key=os.environ[ref] if ref else '',timeout=30)
+
+
+def vector_storage(config):
+    """Construct the configured provider storage without contacting it."""
+    if config['provider_id'] == 'knowledge_local_vector':
+        return None
+    from knowledge_platform.retrieval.milvus_http import MilvusVectorStore
+    milvus = config['milvus']
+    ref = milvus['api_key_env']
+    if ref is not None and ref not in os.environ:
+        raise ValueError('Explicit Milvus credential environment is missing')
+    return MilvusVectorStore(
+        endpoint=milvus['endpoint'],
+        dimension=config['embedding']['dimension'],
+        api_key=os.environ[ref] if ref else '',
+    )

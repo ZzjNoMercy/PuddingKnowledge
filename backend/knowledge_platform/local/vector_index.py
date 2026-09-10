@@ -31,14 +31,18 @@ def _digest(value):
 
 
 class LocalVectorIndex:
-    def __init__(self, catalog_path, repository, reader, embedder, config):
+    def __init__(self, catalog_path, repository, reader, embedder, config, storage=None):
         self.catalog_path, self.repository, self.reader, self.embedder = catalog_path, repository, reader, embedder
         self.config = json.loads(_json(config))
         self.dimension = self.config['embedding']['dimension']
         self.provider_id = self.config['provider_id']
         self.batch_size, self.max_chars = self.config['batch_size'], self.config['max_chars']
-        if self.provider_id != 'knowledge_local_vector' or type(self.dimension) is not int or not 1 <= self.dimension <= 16384:
+        if self.provider_id not in {'knowledge_local_vector','knowledge_milvus_vector'} or type(self.dimension) is not int or not 1 <= self.dimension <= 16384:
             raise ValueError('Invalid vector provider configuration')
+        if self.provider_id == 'knowledge_milvus_vector' and storage is None: raise ValueError('Milvus storage is required')
+        if self.provider_id == 'knowledge_local_vector' and storage is not None:
+            raise ValueError('Local vector provider cannot own remote storage')
+        self.storage = storage
         if type(self.batch_size) is not int or not 1 <= self.batch_size <= 256 or type(self.max_chars) is not int or not 100 <= self.max_chars <= 12000:
             raise ValueError('Invalid vector chunk configuration')
         embedding = self.config['embedding']
@@ -58,6 +62,9 @@ class LocalVectorIndex:
                     ordinal INTEGER, asset_id TEXT, chunk_id TEXT, text TEXT, content_digest TEXT, resource_uri TEXT,
                     embedding_json TEXT, PRIMARY KEY(space_id,collection_id,collection_version,capability,generation,ordinal));
             ''')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(knowledge_local_vector_indexes)')}
+            if 'provider_id' not in columns: db.execute("ALTER TABLE knowledge_local_vector_indexes ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'knowledge_local_vector'")
+            db.execute('CREATE TABLE IF NOT EXISTS knowledge_vector_locations (space_id TEXT, collection_id TEXT, collection_version TEXT, capability TEXT, generation INTEGER, storage_identity TEXT, collection_name TEXT, PRIMARY KEY(space_id,collection_id,collection_version,capability,generation))')
 
     def _db(self, readonly=False):
         db = (sqlite3.connect(f"file:{quote(str(self.catalog_path), safe='/')}?mode=ro",uri=True,timeout=10)
@@ -99,7 +106,7 @@ class LocalVectorIndex:
         return values
 
     def _check_index(self, db, row, signature):
-        if row is None or row['status']!='active' or row['fingerprint']!=signature or row['model_identity']!=self.model_identity or row['dimension']!=self.dimension:
+        if row is None or row['status']!='active' or row['provider_id']!=self.provider_id or row['fingerprint']!=signature or row['model_identity']!=self.model_identity or row['dimension']!=self.dimension:
             raise RetrievalIndexNotReady('Local index identity changed')
         key=tuple(row[k] for k in ('space_id','collection_id','collection_version','capability','generation'))
         size=db.execute('SELECT COUNT(*),COALESCE(SUM(LENGTH(text)+LENGTH(embedding_json)),0) FROM knowledge_local_vector_chunks WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=? AND generation=?',key).fetchone()
@@ -144,8 +151,12 @@ class LocalVectorIndex:
     async def _rebuild(self, principal, correlation, request):
         key=(request.space_id,request.collection_id,request.collection_version,request.capability)
         signature,assets,collection=self._snapshot(key)
-        request_fp=_digest(_json([key,signature,self.provider_id]).encode())
+        storage_identity = str(self.storage.identity) if self.provider_id == 'knowledge_milvus_vector' else ''
+        request_identity=[key,signature,self.provider_id]
+        if self.storage is not None: request_identity.append(storage_identity)
+        request_fp=_digest(_json(request_identity).encode())
         scope_json=_json([request.space_id,principal.tenant_id])
+        prior_snapshot = None
         with self._db(True) as db:
             db.execute('BEGIN')
             prior=db.execute('SELECT * FROM knowledge_local_vector_requests WHERE idempotency_key=? AND subject_id=?',(request.idempotency_key,principal.subject_id)).fetchone()
@@ -155,8 +166,15 @@ class LocalVectorIndex:
                 chunks=self._check_index(db,row,signature)
                 if collection.get('provider_bindings',{}).get(request.capability)!={'provider_id':self.provider_id}:
                     raise ValueError('Index binding changed')
-                await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}], principal, request.space_id)
-                return self._result(correlation,prior['generation'],len(chunks),True)
+                location=self._location(db,key,prior['generation'])
+                prior_snapshot=(key,signature,prior['generation'],location)
+        if prior_snapshot is not None:
+            if self.storage is not None:
+                await asyncio.to_thread(self.storage.verify,location[1],
+                    [json.loads(chunk['embedding_json']) for chunk in chunks])
+            await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}],principal,request.space_id)
+            self._verify_publications([prior_snapshot])
+            return self._result(correlation,prior['generation'],len(chunks),True)
         texts=[]; total=0
         for asset in assets:
             if asset['kind'] not in {'document','wiki_page'}:continue
@@ -183,6 +201,11 @@ class LocalVectorIndex:
             raw=await asyncio.to_thread(self.embedder.embed,[text for _,text in batch])
             vectors.extend(self._vectors(raw,len(batch)))
         await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}], principal, request.space_id)
+        remote_name = None
+        if self.provider_id == 'knowledge_milvus_vector':
+            remote_name = await asyncio.to_thread(self.storage.prepare, vectors, identity=signature)
+            await asyncio.to_thread(self.storage.verify, remote_name, vectors)
+            await self._verify_sources([a for a in assets if a['kind'] in {'document','wiki_page'}], principal, request.space_id)
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             if self._snapshot(key)[0]!=signature:raise ValueError('Index source changed during rebuild')
@@ -199,9 +222,11 @@ class LocalVectorIndex:
             if sum(len(row[8].encode('utf-8')) + len(row[11].encode('utf-8')) for row in rows) > _MAX_TOTAL_BYTES:
                 raise ValueError('Serialized index exceeds verification budget')
             db.execute("UPDATE knowledge_local_vector_indexes SET status='inactive' WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=?",key)
-            db.execute('INSERT INTO knowledge_local_vector_indexes VALUES(?,?,?,?,?,?,?,?,?,?,?)',(*key,generation,signature,self.model_identity,self.dimension,len(rows),_digest(_json(rows).encode()),'active'))
+            db.execute('INSERT INTO knowledge_local_vector_indexes (space_id,collection_id,collection_version,capability,generation,fingerprint,model_identity,dimension,chunk_count,chunks_digest,status,provider_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(*key,generation,signature,self.model_identity,self.dimension,len(rows),_digest(_json(rows).encode()),'active',self.provider_id))
             db.executemany('INSERT INTO knowledge_local_vector_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',rows)
             db.execute('INSERT INTO knowledge_local_vector_requests VALUES(?,?,?,?,?)',(request.idempotency_key,principal.subject_id,scope_json,request_fp,generation))
+            if remote_name is not None:
+                db.execute('INSERT INTO knowledge_vector_locations VALUES(?,?,?,?,?,?,?)',(*key,generation,str(self.storage.identity),remote_name))
             self._before_commit(db)
             db.commit()
         return self._result(correlation,generation,len(rows),False)
@@ -223,43 +248,77 @@ class LocalVectorIndex:
         except Exception as error:
             raise RetrievalIndexNotReady('Current vector source is unavailable') from error
 
+    def _location(self, db, key, generation):
+        if self.storage is None:return None
+        row=db.execute('SELECT storage_identity,collection_name FROM knowledge_vector_locations WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=? AND generation=?',(*key,generation)).fetchone()
+        if row is None or row['storage_identity']!=self.storage.identity:
+            raise RetrievalIndexNotReady('Remote vector location is unavailable')
+        return (row['storage_identity'],row['collection_name'])
+
+    def _verify_publications(self, snapshots):
+        with self._db(True) as db:
+            db.execute('BEGIN')
+            for key,signature,generation,location in snapshots:
+                current,_,collection=self._snapshot(key)
+                row=db.execute('SELECT * FROM knowledge_local_vector_indexes WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=? AND generation=?',(*key,generation)).fetchone()
+                self._check_index(db,row,current)
+                if (current!=signature or collection.get('provider_bindings',{}).get(key[3])!={'provider_id':self.provider_id}
+                    or self._location(db,key,generation)!=location):
+                    raise RetrievalIndexNotReady('Vector publication changed during request')
+
     async def search(self, *, query, space_id, limit, collection_id=None, collection_version=None, capability='document_rag_query', principal=None):
         if space_id not in self.config['space_ids'] or capability not in _CAPS:
             return ()
         try:
+            if not isinstance(query,str) or not query.strip() or len(query)>512 or type(limit) is not int or not 1<=limit<=50:
+                raise ValueError('Invalid vector query')
             with self._db(True) as db:
                 db.execute('BEGIN')
                 indexes=db.execute("SELECT * FROM knowledge_local_vector_indexes WHERE space_id=? AND capability=? AND status='active' AND (? IS NULL OR collection_id=?) AND (? IS NULL OR collection_version=?)",(space_id,capability,collection_id,collection_id,collection_version,collection_version)).fetchall()
                 current_keys = {(c['id'], c['version']) for c in self.repository.list_collections(space_id=space_id)}
                 indexes = [row for row in indexes if (row['collection_id'], row['collection_version']) in current_keys]
                 if not indexes:
-                    if collection_id is not None:raise RetrievalIndexNotReady('Local index is unavailable')
+                    if collection_id is not None:raise RetrievalIndexNotReady('Vector index is unavailable')
                     return ()
                 if sum(row['chunk_count'] * self.dimension for row in indexes) > _MAX_COMPONENTS:
                     raise RetrievalIndexNotReady('Query vector budget exceeded')
-                candidates=[]; snapshots=[]; source_assets={}
+                groups=[]; snapshots=[]; source_assets={}
                 for row in indexes:
                     key=tuple(row[k] for k in ('space_id','collection_id','collection_version','capability'))
                     signature,assets,collection=self._snapshot(key)
                     if collection.get('provider_bindings',{}).get(capability)!={'provider_id':self.provider_id}:
-                        if collection_id is not None:raise RetrievalIndexNotReady('Local index binding changed')
+                        if collection_id is not None:raise RetrievalIndexNotReady('Vector index binding changed')
                         continue
                     rows=self._check_index(db,row,signature)
-                    source_assets.update({a["id"]:a for a in assets if a["kind"] in {"document","wiki_page"}})
-                    candidates.extend(rows);snapshots.append((key,signature,row['generation']))
-            if not candidates:return ()
+                    source_assets.update({a['id']:a for a in assets if a['kind'] in {'document','wiki_page'}})
+                    location=self._location(db,key,row['generation'])
+                    groups.append((rows,location));snapshots.append((key,signature,row['generation'],location))
+            if not groups:return ()
             await self._verify_sources(source_assets.values(), principal, space_id)
             raw=await asyncio.to_thread(self.embedder.embed,[query]);q=self._vectors(raw,1)[0]
+            candidates=[]
+            for rows,location in groups:
+                if self.storage is None:
+                    candidates.extend(rows)
+                    continue
+                vectors=[json.loads(row['embedding_json']) for row in rows]
+                await asyncio.to_thread(self.storage.verify,location[1],vectors)
+                hits=await asyncio.to_thread(self.storage.search,location[1],q,limit)
+                if not isinstance(hits,(list,tuple)) or len(hits)!=min(limit,len(rows)):
+                    raise RetrievalIndexNotReady('Remote vector results are incomplete')
+                seen=set()
+                for hit in hits:
+                    if not isinstance(hit,(list,tuple)) or len(hit)!=2:
+                        raise RetrievalIndexNotReady('Remote vector result is invalid')
+                    ordinal,score=hit
+                    if (type(ordinal) is not int or not 0<=ordinal<len(rows) or ordinal in seen
+                        or type(score) not in (int,float) or not math.isfinite(score)):
+                        raise RetrievalIndexNotReady('Remote vector ordinal is invalid')
+                    seen.add(ordinal);candidates.append(rows[ordinal])
+            # Source authorization and active generation must still hold after
+            # every remote request. No provider response owns citations.
             await self._verify_sources(source_assets.values(), principal, space_id)
-            # The model request is outside the read transaction; recheck the
-            # current publication before returning any evidence.
-            with self._db(True) as db:
-                for key,signature,generation in snapshots:
-                    current,_,collection=self._snapshot(key)
-                    row=db.execute('SELECT * FROM knowledge_local_vector_indexes WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=? AND generation=?',(*key,generation)).fetchone()
-                    self._check_index(db,row,current)
-                    if current!=signature or collection.get('provider_bindings',{}).get(capability)!={'provider_id':self.provider_id}:
-                        raise RetrievalIndexNotReady('Local index changed during query')
+            self._verify_publications(snapshots)
             results=[]
             for item in candidates:
                 vector=self._vectors([json.loads(item['embedding_json'])],1)[0]
@@ -269,4 +328,4 @@ class LocalVectorIndex:
             return tuple(results[:limit])
         except RetrievalIndexNotReady:raise
         except Exception as error:
-            raise RetrievalProviderError('Local vector query is unavailable') from error
+            raise RetrievalProviderError('Vector query is unavailable') from error

@@ -109,10 +109,10 @@ def _build_app(
             document_provider = _CombinedWikiProvider(document_provider, PackageRetrievalProvider(packages, repository))
     vector_index = None
     if index_config is not None:
-        from knowledge_platform.local.index_config import embedding_client
+        from knowledge_platform.local.index_config import embedding_client, vector_storage
         from knowledge_platform.local.vector_index import LocalVectorIndex
         vector_index = LocalVectorIndex(repository._database_path, repository, reader,
-            embedding_client(index_config), index_config)
+            embedding_client(index_config), index_config, storage=vector_storage(index_config))
         index_rebuild = vector_index
         document_provider = _CombinedWikiProvider(_VectorProvider(vector_index, 'document_rag_query', principal=principal), document_provider)
         wiki = WikiQueryService(_CombinedWikiProvider(_VectorProvider(vector_index, 'wiki_query', principal=principal), provider), repository)
@@ -278,13 +278,14 @@ class _VectorQueryEngine:
         self.capability, self.index, self.repository, self.fallback = capability, index, repository, fallback
 
     async def query(self, *, request, collection, principal, correlation):
-        if collection.provider_bindings.get(self.capability) == {'provider_id':'knowledge_local_vector'}:
+        provider_id = self.index.provider_id
+        if collection.provider_bindings.get(self.capability) == {'provider_id': provider_id}:
             from knowledge_platform.router.local import LocalServiceQueryEngine
             provider = _VectorProvider(self.index, self.capability, collection, principal=principal)
             service = (WikiQueryService(provider, self.repository) if self.capability == 'wiki_query'
                        else DocumentRetrievalService(provider, self.repository))
             return await LocalServiceQueryEngine(capability=self.capability, service=service,
-                provider_id='knowledge_local_vector').query(request=request, collection=collection,
+                provider_id=provider_id).query(request=request, collection=collection,
                     principal=principal, correlation=correlation)
         if self.fallback is not None:
             return await self.fallback.query(request=request, collection=collection, principal=principal, correlation=correlation)
