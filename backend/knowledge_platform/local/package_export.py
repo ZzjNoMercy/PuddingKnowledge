@@ -129,6 +129,14 @@ class PackageExportService:
         try:
             connection = sqlite3.connect(f"file:{quote(str(Path(database_path).absolute()), safe='/')}?mode=ro", uri=True)
             connection.row_factory = sqlite3.Row
+            table = connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_assets'").fetchone()
+            if table is None:
+                connection.close()
+                return set()
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_assets)")}
+            if "metadata_json" not in columns:
+                connection.close()
+                return set()
             rows = connection.execute("SELECT id, space_id, metadata_json FROM knowledge_assets").fetchall()
         except (OSError, sqlite3.Error) as error:
             raise PackageExportError("Catalog asset relation read failed") from error

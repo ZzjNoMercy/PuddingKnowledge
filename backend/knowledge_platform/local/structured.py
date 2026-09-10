@@ -92,7 +92,8 @@ class CatalogTableProvider:
                 logical[asset_id] = tuple(bindings.items())
                 uris[asset_id] = dataset['source_uri']
         provider = LocalStructuredFileProvider(asset_paths=paths, asset_uris=uris,
-                                                logical_asset_sources=logical)
+            asset_sheets={asset_id: (self.catalog.get_structured_asset(asset_id=asset_id) or {}).get('sheet_name')
+                          for asset_id in paths}, logical_asset_sources=logical)
         return await provider.query(query=query, asset_id=asset_id, space_id=space_id,
                                     limit=limit, semantic_context=semantic_context)
 
@@ -107,7 +108,7 @@ def build_structured_services(paths: dict[str, Path], catalog_path: Path) -> dic
                 or asset.get('reference_status') not in {'ready', 'verified', 'active'}
                 or asset.get('source_type') == 'logical_concat'):
             raise ValueError('Structured source is not an approved local Catalog Asset')
-        profile = LocalStructuredFileProvider(asset_paths={}, asset_uris={}).inspect_source(path=path)
+        profile = LocalStructuredFileProvider(asset_paths={}, asset_uris={}).inspect_source(path=path, sheet_name=asset.get('sheet_name'))
         if profile.content_digest != asset.get('content_digest'):
             raise ValueError('Structured source bytes differ from the Catalog')
         uris[asset_id] = asset['source_uri']

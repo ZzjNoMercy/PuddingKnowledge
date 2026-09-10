@@ -61,6 +61,7 @@ def _build_app(
     package_config: dict | None = None,
 ):
     catalog = CatalogQueryService(repository)
+    structured_paths = dict(getattr(getattr(table_query, '_provider', None), 'paths', {}))
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
     reader = LocalFilesystemBlobReader(bindings)
     if wiki_provider is not None:
@@ -80,7 +81,11 @@ def _build_app(
     if packages is not None:
         from knowledge_platform.local.package_import import PackageBlobReader, PackageRetrievalProvider
         from knowledge_platform.local.packages import BoundPackageImport
+        from knowledge_platform.local.package_tables import PackageTableProvider
+        from knowledge_platform.structured import TableQueryService
         package_import = BoundPackageImport(packages, package_config)
+        table_query = TableQueryService(catalog=repository, provider=_CombinedTableProvider(
+            repository, PackageTableProvider(packages, repository), table_query._provider if table_query is not None else None))
         reader = PackageBlobReader(repository, packages, reader)
         provider = _CombinedWikiProvider(provider, PackageRetrievalProvider(packages, repository))
     def derivative_targets(asset_id):
@@ -173,7 +178,8 @@ def _build_app(
         from knowledge_platform.local.package_export import PackageExportService
         from knowledge_platform.transport.fastapi_packages_router import create_packages_router
         app.include_router(create_packages_router(publisher=packages,
-            exporter=PackageExportService(repository, reader), config=package_config,
+            exporter=PackageExportService(repository, _CombinedBlobReader(
+                LocalFilesystemBlobReader(structured_paths), reader, frozenset(structured_paths))), config=package_config,
             principal_provider=lambda: principal))
     return app
 
@@ -212,6 +218,25 @@ class _PackageQueryEngine:
             return await self.fallback.query(request=request, collection=collection, principal=principal, correlation=correlation)
         return QueryResult(status="error", trace_id=correlation.trace_id,
             error=QueryError(code=QueryErrorCode.BINDING_UNAVAILABLE, message="Collection provider binding is unavailable"))
+
+
+class _CombinedTableProvider:
+    def __init__(self, repository, packages, initial):
+        self.repository, self.packages, self.initial = repository, packages, initial
+
+    async def query(self, *, query, asset_id, space_id, limit, semantic_context):
+        arguments = dict(query=query, asset_id=asset_id, space_id=space_id, limit=limit, semantic_context=semantic_context)
+        if asset_id is not None:
+            asset = self.repository.get_structured_asset(asset_id=asset_id)
+            provider = self.packages if asset is not None and asset.get('source_type') == 'package' else self.initial
+            if provider is None:
+                return ()
+            return await provider.query(**arguments)
+        results = list(await self.packages.query(**arguments))
+        if self.initial is not None:
+            results.extend(await self.initial.query(**arguments))
+        results.sort(key=lambda item: (-(item.score or 0), item.asset_id))
+        return tuple(results[:limit])
 
 
 class _CombinedBlobReader:

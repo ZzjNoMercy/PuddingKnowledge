@@ -40,7 +40,8 @@ class Runtime:
             '--catalog', str(self.seed), '--wiki-root', str(self.root / 'wiki'),
             '--state-dir', str(self.root / 'state'), '--temp-dir', str(self.root / f'tmp{self.turn}'),
             '--ready-file', str(ready), '--port', str(self.port),
-            '--file-config', str(self.root / 'files.json'), '--package-config', str(self.root / 'packages.json')],
+            '--file-config', str(self.root / 'files.json'), '--package-config', str(self.root / 'packages.json'),
+            *getattr(self, 'extra_args', ())],
             cwd='/private/tmp', env=env, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not ready.exists() and self.proc.poll() is None:

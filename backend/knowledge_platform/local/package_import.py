@@ -27,12 +27,13 @@ from knowledge_platform.retrieval.ports import RetrievalProviderError
 from knowledge_platform.retrieval.ports import RetrievalIndexNotReady
 from knowledge_platform.retrieval.local import _open_regular_file
 from knowledge_platform.semantic.markdown import SemanticMarkdownDefinition, SqliteSemanticMarkdownRepository
+from knowledge_platform.structured import LocalStructuredFileProvider
 
 from .objects import LocalObjectStore
 
 
 _ADMIN = {"knowledge.admin", "knowledge:admin"}
-_SUPPORTED = {"knowledge_list", "knowledge_search", "knowledge_read", "knowledge_query", "wiki_query", "document_rag_query"}
+_SUPPORTED = {"knowledge_list", "knowledge_search", "knowledge_read", "knowledge_query", "wiki_query", "document_rag_query", "table_query"}
 _TEXT_MIMES = {"text/plain", "text/markdown", "text/html", "application/json", "application/xml"}
 
 
@@ -161,6 +162,26 @@ class LocalPackagePublisher:
     def _before_commit(self, connection: sqlite3.Connection) -> None:
         """Testing seam for proving transaction rollback; production is a no-op."""
 
+    @staticmethod
+    def _table_asset(asset: Mapping[str, Any]) -> bool:
+        """Return whether a package Asset is an explicitly supported table file."""
+        kind = str(asset.get("kind") or "").lower()
+        mime = str(asset.get("mime_type") or "").lower().split(";", 1)[0].strip()
+        suffix = Path(str(asset.get("package_path") or "")).suffix.lower()
+        if kind not in {"table", "spreadsheet", "structured_asset", "structured"}:
+            return False
+        return suffix in {".csv", ".tsv", ".xlsx", ".xls"} and mime not in {"text/plain", "text/markdown"}
+
+    @staticmethod
+    def _structured_row(profile: Any, *, asset: Mapping[str, Any], object_digest: str, revision: str, now: str, size_bytes: int) -> tuple[Any, ...]:
+        aid, space = str(asset["id"]), str(asset["space_id"])
+        path = str(asset["package_path"])
+        return (aid, space, aid, aid, "package", Path(path).name, asset.get("sheet_name"), size_bytes, None,
+                f"knowledge://spaces/{space}/structured-assets/{aid}/source", object_digest, object_digest,
+                f"knowledge://spaces/{space}/structured-assets/{aid}/profile", profile.content_digest,
+                profile.content_digest, "ready", profile.row_count, len(profile.columns), _json(list(profile.columns)),
+                "ready", _json(["table_query"]), _json({"package_revision": revision, "package_path": path, "package_object_digest": object_digest}), now, now)
+
     def _snapshot_zip(self, package_zip: Path, destination: Path) -> str:
         """Read one host-bound ZIP through an anchored descriptor exactly once."""
         path = package_zip.expanduser().absolute()
@@ -260,6 +281,8 @@ class LocalPackagePublisher:
                     mime = str(asset.get("mime_type") or "")
                     chunk_count = len(_chunks(content.decode("utf-8"))) if (asset["kind"] in {"document", "wiki_page"} and (mime in _TEXT_MIMES or mime.startswith("text/"))) else 0
                     metadata = {"package_revision": package_revision, "package_id": package_id, "source_type": "package", "object_digest": asset_objects[aid], "package_path": asset["package_path"], "chunk_count": chunk_count}
+                    if asset.get("sheet_name") is not None:
+                        metadata["sheet_name"] = asset["sheet_name"]
                     for field in ("original_asset_id", "derivatives", "published_asset_ids"):
                         if field in asset:
                             metadata[field] = asset[field]
@@ -267,6 +290,16 @@ class LocalPackagePublisher:
                         "INSERT INTO knowledge_assets(id,space_id,kind,title,description,mime_type,source_type,source_uri,revision,content_digest,permissions_json,metadata_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (aid, sid, asset["kind"], asset["title"], asset.get("description", ""), asset["mime_type"], "package", asset["source_uri"], asset["revision"], asset["content_digest"], "{}", _json(metadata), now, now),
                     )
+                    if self._table_asset(asset):
+                        profile = LocalStructuredFileProvider(asset_paths={}, asset_uris={}).inspect_source(
+                            path=root / str(asset["package_path"]), sheet_name=asset.get("sheet_name")
+                        )
+                        if profile.content_digest != asset["content_digest"]:
+                            raise ValueError(f"structured profile digest mismatch: {aid}")
+                        connection.execute(
+                            "INSERT INTO knowledge_structured_assets (id,space_id,source_key,document_asset_id,source_type,file_name,sheet_name,size_bytes,modified_at,source_uri,source_reference_digest,logical_path_digest,profile_uri,profile_reference_digest,content_digest,profile_status,row_count,column_count,columns_json,reference_status,capabilities,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            self._structured_row(profile, asset=asset, object_digest=asset_objects[aid], revision=package_revision, now=now, size_bytes=len(content)),
+                        )
                     mime = str(asset.get("mime_type") or "")
                     if asset["kind"] in {"document", "wiki_page"} and (mime in _TEXT_MIMES or mime.startswith("text/")):
                         text = self._objects.read(asset_objects[aid]).decode("utf-8")
@@ -281,7 +314,15 @@ class LocalPackagePublisher:
                     connection.execute("INSERT INTO knowledge_datasets(id,space_id,name,version,kind,description,asset_ids,semantic_asset_ids,capabilities,freshness,permissions_json,manifest_digest,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cid, sid, collection["name"], cv, collection["kind"], "", _json(collection.get("asset_ids", [])), _json(collection.get("semantic_asset_ids", [])), _json(supported), _json(collection.get("freshness", {})), "{}", package_revision, now, now))
                     for capability in supported:
                         if capability in {"wiki_query", "document_rag_query"}:
-                            connection.execute("INSERT INTO knowledge_collection_bindings VALUES(?,?,?,?,?,?,?)", (sid, cid, cv, capability, _json({"provider_id": "knowledge_package"}), now, now))
+                            binding = {"provider_id": "knowledge_package"}
+                        elif capability == "table_query":
+                            candidates = [a for a in assets if str(a.get("id")) in {str(x) for x in collection.get("asset_ids", [])} and self._table_asset(a)]
+                            if len(candidates) != 1:
+                                raise ValueError("table_query Collection must select exactly one table Asset")
+                            binding = {"asset_id": str(candidates[0]["id"])}
+                        else:
+                            continue
+                        connection.execute("INSERT INTO knowledge_collection_bindings VALUES(?,?,?,?,?,?,?)", (sid, cid, cv, capability, _json(binding), now, now))
                 for semantic in semantics:
                     body = self._objects.read(semantic_objects[str(semantic["id"])])
                     prefix, _, markdown = body.decode("utf-8").partition("\n---\n\n")
@@ -314,6 +355,10 @@ class LocalPackagePublisher:
             row = connection.execute("SELECT space_id,source_type,content_digest,metadata_json FROM knowledge_assets WHERE id=?", (asset["id"],)).fetchone()
             if row is not None and (row["source_type"] != "package" or row["content_digest"] != asset["content_digest"] or json.loads(row["metadata_json"]).get("package_revision") != revision):
                 raise ValueError(f"Asset identity conflict: {asset['id']}")
+            if self._table_asset(asset):
+                structured = connection.execute("SELECT source_type,document_asset_id,content_digest,columns_json,row_count,sheet_name,metadata_json FROM knowledge_structured_assets WHERE id=?", (asset["id"],)).fetchone()
+                if structured is not None and (structured["source_type"] != "package" or structured["document_asset_id"] != asset["id"]):
+                    raise ValueError(f"Structured Asset identity conflict: {asset['id']}")
         for collection in collections:
             row = connection.execute("SELECT manifest_digest FROM knowledge_datasets WHERE id=? AND space_id=? AND version=?", (collection["id"], collection["space_id"], collection["version"])).fetchone()
             if row is not None and row[0] != revision:
@@ -337,6 +382,36 @@ class LocalPackagePublisher:
             data = self._objects.read(metadata["object_digest"])
             if "sha256:" + hashlib.sha256(data).hexdigest() != asset["content_digest"]:
                 raise ValueError("package revision object is corrupt")
+            if self._table_asset(asset):
+                structured = connection.execute("SELECT * FROM knowledge_structured_assets WHERE id=?", (asset["id"],)).fetchone()
+                if structured is None or structured["source_type"] != "package" or structured["document_asset_id"] != asset["id"]:
+                    raise ValueError("package structured Asset is incomplete")
+                suffix = Path(str(asset.get("package_path") or "")).suffix
+                replay_dir = Path(tempfile.mkdtemp(prefix=".replay-", dir=self.state_root))
+                try:
+                    replay_path = replay_dir / ("source" + suffix)
+                    replay_path.write_bytes(data)
+                    profile = LocalStructuredFileProvider(asset_paths={}, asset_uris={}).inspect_source(path=replay_path, sheet_name=asset.get("sheet_name"))
+                finally:
+                    shutil.rmtree(replay_dir, ignore_errors=True)
+                expected_uri = f"knowledge://spaces/{asset['space_id']}/structured-assets/{asset['id']}/source"
+                metadata = json.loads(structured["metadata_json"])
+                capabilities = json.loads(structured["capabilities"])
+                if (structured["content_digest"] != profile.content_digest
+                        or structured["row_count"] != profile.row_count
+                        or json.loads(structured["columns_json"]) != list(profile.columns)
+                        or structured["space_id"] != asset["space_id"]
+                        or structured["source_uri"] != expected_uri
+                        or structured["sheet_name"] != asset.get("sheet_name")
+                        or structured["profile_status"] != "ready"
+                        or structured["reference_status"] != "ready"
+                        or capabilities != ["table_query"]
+                        or metadata.get("package_revision") != revision
+                        or metadata.get("package_object_digest") != "sha256:" + hashlib.sha256(data).hexdigest()
+                        or structured["source_reference_digest"] != metadata.get("package_object_digest")
+                        or structured["logical_path_digest"] != metadata.get("package_object_digest")
+                        or structured["profile_reference_digest"] != profile.content_digest):
+                    raise ValueError("package structured profile publication changed")
             if asset["kind"] in {"document", "wiki_page"} and (str(asset.get("mime_type", "")).startswith("text/") or asset.get("mime_type") in _TEXT_MIMES):
                 expected = _chunks(data.decode("utf-8"))
                 rows = connection.execute("SELECT ordinal,text,content_digest FROM knowledge_package_chunks WHERE asset_id=? AND package_revision=? ORDER BY ordinal", (asset["id"], revision)).fetchall()
@@ -354,6 +429,13 @@ class LocalPackagePublisher:
                 binding = connection.execute("SELECT binding_json FROM knowledge_collection_bindings WHERE space_id=? AND collection_id=? AND collection_version=? AND capability=?", (collection["space_id"], collection["id"], collection["version"], capability)).fetchone()
                 if binding is None or json.loads(binding[0]) != {"provider_id": "knowledge_package"}:
                     raise ValueError("package provider binding is incomplete")
+            if "table_query" in set(collection.get("capabilities", [])):
+                candidates = [a for a in assets if str(a.get("id")) in {str(x) for x in collection.get("asset_ids", [])} and self._table_asset(a)]
+                if len(candidates) != 1:
+                    raise ValueError("table_query Collection must select exactly one table Asset")
+                binding = connection.execute("SELECT binding_json FROM knowledge_collection_bindings WHERE space_id=? AND collection_id=? AND collection_version=? AND capability='table_query'", (collection["space_id"], collection["id"], collection["version"])).fetchone()
+                if binding is None or json.loads(binding[0]) != {"asset_id": str(candidates[0]["id"])}:
+                    raise ValueError("package table provider binding is incomplete")
         for semantic in semantics:
             owned = connection.execute("SELECT body_digest FROM knowledge_package_semantic_assets WHERE id=? AND space_id=? AND package_revision=?", (semantic["id"], semantic["space_id"], revision)).fetchone()
             row = connection.execute("SELECT * FROM knowledge_semantic_assets WHERE id=? AND space_id=?", (semantic["id"], semantic["space_id"])).fetchone()

@@ -80,6 +80,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
                     "FROM knowledge_assets ORDER BY id"
                 )
             ]
+            assets = self._merge_structured_package_assets(connection, assets)
             revision_after = self.catalog_revision
             if revision_before != revision_after:
                 raise OSError("Catalog changed while Package snapshot was being read")
@@ -100,6 +101,70 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA query_only=ON")
         return connection
+
+    @classmethod
+    def _merge_structured_package_assets(
+        cls, connection: sqlite3.Connection, assets: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Project publishable table sources into the Package asset index."""
+        if not cls._has_table(connection, "knowledge_structured_assets"):
+            return assets
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_structured_assets)")}
+        required = {"id", "space_id", "file_name", "sheet_name", "source_uri", "content_digest", "reference_status", "capabilities"}
+        if not required.issubset(columns):
+            raise ValueError("knowledge_structured_assets schema is incomplete for Package export")
+        rows = connection.execute(
+            "SELECT id, space_id, file_name, sheet_name, source_uri, content_digest, reference_status, capabilities "
+            "FROM knowledge_structured_assets ORDER BY id"
+        ).fetchall()
+        by_id = {str(item["id"]): item for item in assets}
+        suffixes = {
+            ".md": "text/markdown", ".markdown": "text/markdown", ".csv": "text/csv", ".tsv": "text/tab-separated-values",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xls": "application/vnd.ms-excel",
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        }
+        for row in rows:
+            status = str(row["reference_status"] or "").casefold()
+            capabilities = cls._json(row["capabilities"], field="knowledge_structured_assets.capabilities", default=[])
+            if status not in {"ready", "verified", "active"} or not isinstance(capabilities, list) or "table_query" not in {str(value) for value in capabilities}:
+                continue
+            asset_id = str(row["id"] or "")
+            space_id = str(row["space_id"] or "")
+            digest = str(row["content_digest"] or "")
+            if not asset_id or not space_id or not digest:
+                raise ValueError("publishable structured asset metadata is incomplete")
+            existing = by_id.get(asset_id)
+            if existing is not None:
+                if str(existing.get("space_id")) != space_id or str(existing.get("content_digest")) != digest:
+                    raise ValueError(f"structured asset conflicts with Catalog Asset: {asset_id}")
+                # The structured row is the canonical owner of table binding
+                # metadata.  A document Asset with the same id/digest can
+                # still have a different sheet, so preserve this field rather
+                # than silently dropping it on projection.
+                if row["sheet_name"]:
+                    existing["sheet_name"] = str(row["sheet_name"])
+                continue
+            file_name = str(row["file_name"] or "")
+            extension = Path(file_name).suffix.casefold()
+            mime_type = suffixes.get(extension, "application/octet-stream")
+            canonical_uri = f"knowledge://spaces/{space_id}/assets/{asset_id}"
+            projected = {
+                "id": asset_id,
+                "space_id": space_id,
+                "kind": "structured_asset",
+                "title": file_name,
+                "description": "",
+                "mime_type": mime_type,
+                "source_type": "structured_file",
+                "source_uri": canonical_uri,
+                "revision": digest,
+                "content_digest": digest,
+            }
+            if row["sheet_name"]:
+                projected["sheet_name"] = str(row["sheet_name"])
+            assets.append(projected)
+            by_id[asset_id] = projected
+        return assets
 
     @staticmethod
     def _has_column(connection: sqlite3.Connection, table: str, column: str) -> bool:
