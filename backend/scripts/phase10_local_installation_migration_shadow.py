@@ -328,7 +328,9 @@ def run_shadow(
             and reconciled.rollback_reconciliation_digest is not None
             and rolled_back.rollback_delta_reconciled
         ),
+        "stateful_rollback_identity_verified": rollback_replay.identity_preserving,
         "stateful_rollback_replay_verified": rollback_replay.lossless,
+        "rollback_evidence_scope": "object_ids_only",
         "stateful_rollback_replay": rollback_replay.to_dict(),
         "failure_recovery_sequence": [
             {"state": "PREPARED", "checkpoint": "target_import", "status": "failed"},

@@ -50,7 +50,7 @@ def _object_ids(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class StatefulRollbackReplay:
-    """Verify a lossless reverse-delta replay over opaque object identities."""
+    """Verify identity preservation only; IDs cannot prove payload-level rollback."""
 
     source_before: tuple[str, ...]
     target_before_rollback: tuple[str, ...]
@@ -74,25 +74,31 @@ class StatefulRollbackReplay:
             raise InstallationMigrationError("post-cutover delta overlaps the source snapshot")
         if self.target_before_rollback != tuple(sorted((*self.source_before, *self.post_cutover_delta))):
             raise InstallationMigrationError("target rollback input does not equal source plus delta")
-        if self.source_after_rollback != self.source_before:
-            raise InstallationMigrationError("rollback did not restore the source snapshot")
-        if self.target_after_rollback != self.source_before:
-            raise InstallationMigrationError("rollback did not remove the post-cutover delta")
-        if self.removed_delta != self.post_cutover_delta:
-            raise InstallationMigrationError("rollback removed an unexpected delta")
+        if self.source_after_rollback != self.target_before_rollback:
+            raise InstallationMigrationError("rollback must preserve post-cutover objects in the source")
+        if self.target_after_rollback != self.target_before_rollback:
+            raise InstallationMigrationError("rollback must retain the target for recovery")
+        if self.removed_delta:
+            raise InstallationMigrationError("rollback cannot delete post-cutover objects")
         if not isinstance(self.active_target_revision_present, bool):
             raise InstallationMigrationError("active target revision state must be boolean")
         if self.active_target_revision_present:
             raise InstallationMigrationError("rollback replay cannot retain an active target revision")
 
     @property
-    def lossless(self) -> bool:
+    def identity_preserving(self) -> bool:
         return (
-            self.source_after_rollback == self.source_before
-            and self.removed_delta == self.post_cutover_delta
-            and self.target_after_rollback == self.source_before
+            self.source_after_rollback == self.target_before_rollback
+            and self.target_after_rollback == self.target_before_rollback
+            and not self.removed_delta
             and self.active_target_revision_present is False
         )
+
+    @property
+    def lossless(self) -> bool:
+        # The model has no bytes, revisions, updates, deletes, or writer-fence evidence.
+        # Preserve the field for old readers, but never promote IDs into data proof.
+        return False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +109,8 @@ class StatefulRollbackReplay:
             "target_after_rollback_count": len(self.target_after_rollback),
             "removed_delta_count": len(self.removed_delta),
             "active_target_revision_present": self.active_target_revision_present,
+            "identity_preserving": self.identity_preserving,
+            "evidence_scope": "object_ids_only",
             "lossless": self.lossless,
         }
 
@@ -174,9 +182,9 @@ def replay_stateful_rollback_shadow(
         source_before=source,
         target_before_rollback=target_before,
         post_cutover_delta=delta,
-        source_after_rollback=source,
-        target_after_rollback=source,
-        removed_delta=delta,
+        source_after_rollback=target_before,
+        target_after_rollback=target_before,
+        removed_delta=(),
     )
 
 

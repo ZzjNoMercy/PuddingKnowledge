@@ -162,20 +162,6 @@ def build_rc_validation_manifest(
         dependency_evidence = f"same-checkout scan found {finding_count} Knowledge-coupling findings; mixed cleanup remains pending"
     if installation_shadow.get("status") != "PHASE10_INSTALLATION_MIGRATION_SHADOW_PASS_NOT_ACTIVATABLE":
         raise RcValidationError("unexpected installation shadow status")
-    rollback_verified = (
-        installation_shadow.get("replay_idempotent") is True
-        and installation_shadow.get("post_cutover_delta_verified") is True
-        and installation_shadow.get("rollback_reconciliation_verified") is True
-        and installation_shadow.get("stateful_rollback_replay_verified") is True
-        and installation_shadow.get("credential_rebind_recovery_verified") is True
-        and installation_shadow.get("activation_allowed") is False
-        and installation_shadow.get("execution_allowed") is False
-        and installation_shadow.get("physical_copy_performed") is False
-        and installation_shadow.get("secret_bytes_read") is False
-        and installation_shadow.get("source_home_changed") is False
-        and installation_shadow.get("canonical_catalog_changed") is False
-        and installation_shadow.get("final_manifest", {}).get("state") == "ROLLED_BACK"
-    )
     upgrade_verified = (
         installation_shadow.get("state_sequence") == ["DISCOVERED", "PREPARED", "CUTOVER", "ROLLED_BACK"]
         and installation_shadow.get("post_cutover_delta_verified") is True
@@ -215,10 +201,8 @@ def build_rc_validation_manifest(
         ),
         RcCheck(
             "stateful_rollback",
-            "shadow_verified" if rollback_verified else "blocked",
-            "post-cutover delta was reconciled, object-set reverse replay was lossless, source writers were restored, target revision cleared, and replay was idempotent"
-            if rollback_verified
-            else "rollback invariants were not proven by the installation shadow",
+            "blocked",
+            "object-ID shadows cannot prove byte-level reverse migration or active-writer fencing",
         ),
     )
     return RcValidationManifest(

@@ -88,21 +88,24 @@ def test_manifest_has_11_20_fields_without_host_paths_or_secret_bytes() -> None:
     assert "token=" not in serialized
 
 
-def test_stateful_rollback_replay_is_lossless_and_rejects_overlap() -> None:
+def test_stateful_rollback_preserves_new_ids_without_claiming_lossless_data() -> None:
     replay = replay_stateful_rollback_shadow(
         source_object_ids=("asset-00001", "collection-00001"),
         post_cutover_delta=("asset-00002",),
     )
-    assert replay.lossless is True
+    assert replay.identity_preserving is True
+    assert replay.lossless is False
     assert replay.to_dict() == {
         "source_object_count": 2,
         "target_before_rollback_count": 3,
         "post_cutover_delta_count": 1,
-        "source_after_rollback_count": 2,
-        "target_after_rollback_count": 2,
-        "removed_delta_count": 1,
+        "source_after_rollback_count": 3,
+        "target_after_rollback_count": 3,
+        "removed_delta_count": 0,
         "active_target_revision_present": False,
-        "lossless": True,
+        "identity_preserving": True,
+        "evidence_scope": "object_ids_only",
+        "lossless": False,
     }
     with pytest.raises(InstallationMigrationError, match="overlaps"):
         replay_stateful_rollback_shadow(
@@ -317,7 +320,8 @@ def test_local_installation_shadow_uses_current_local_catalog_counts(tmp_path: P
     assert result["replay_idempotent"] is True
     assert result["post_cutover_delta_verified"] is True
     assert result["rollback_reconciliation_verified"] is True
-    assert result["stateful_rollback_replay_verified"] is True
+    assert result["stateful_rollback_replay_verified"] is False
+    assert result["stateful_rollback_identity_verified"] is True
     assert result["source_object_inventory"]["source_object_count"] == 46
     assert result["source_object_inventory"]["source_object_digest"].startswith("sha256:")
     assert result["source_object_inventory"]["stage_database_digest"].startswith("sha256:")
@@ -431,3 +435,11 @@ def test_local_installation_shadow_rejects_same_count_with_wrong_catalog_digest(
             migration_manifest=manifest_path,
             output_path=tmp_path / "migration-shadow.json",
         )
+
+
+def test_discarding_delta_is_not_a_valid_rollback():
+    from knowledge_platform.distribution.installation_migration import StatefulRollbackReplay
+    with pytest.raises(InstallationMigrationError, match="preserve"):
+        StatefulRollbackReplay(source_before=("a",), target_before_rollback=("a", "b"),
+            post_cutover_delta=("b",), source_after_rollback=("a",),
+            target_after_rollback=("a",), removed_delta=("b",))

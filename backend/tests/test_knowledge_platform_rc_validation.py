@@ -62,7 +62,7 @@ def test_rc_matrix_is_complete_but_not_releaseable() -> None:
     ]
     assert document["checks"][8]["status"] == "shadow_verified"
     assert document["checks"][9]["status"] == "shadow_verified"
-    assert document["checks"][10]["status"] == "shadow_verified"
+    assert document["checks"][10]["status"] == "blocked"
     assert all(check["status"] == "blocked" for check in document["checks"][:8])
 
 
@@ -145,3 +145,11 @@ def test_rc_shadow_can_bind_a_real_local_prepared_manifest(tmp_path: Path) -> No
     validate(json.loads((tmp_path / "rc-real.json").read_text(encoding="utf-8")), json.loads(schema_path.read_text(encoding="utf-8")))
     assert result["status"] == "PHASE10_RC_PREFLIGHT_NOT_RELEASEABLE"
     assert result["source_observations"]["installation_migration"] == "real-local-prepared-manifest-state-machine-shadow"
+
+
+def test_self_reported_shadow_flags_cannot_prove_stateful_rollback():
+    value = _installation()
+    value["stateful_rollback_replay_verified"] = True
+    result = build_rc_validation_manifest(extraction_manifest=_extraction(), installation_shadow=value)
+    check = next(item for item in result.to_dict()["checks"] if item["name"] == "stateful_rollback")
+    assert check["status"] == "blocked"
