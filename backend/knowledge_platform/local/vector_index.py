@@ -1,6 +1,8 @@
 """Persistent local vector indexes with Catalog-bound atomic publication."""
 from __future__ import annotations
 
+from knowledge_platform.retrieval.trace import span, fact, ranks
+
 import asyncio
 import hashlib
 import inspect
@@ -328,11 +330,14 @@ class LocalVectorIndex:
                     location=self._location(db,key,row['generation'])
                     groups.append((rows,location));snapshots.append((key,signature,row['generation'],location))
             if not groups:return ()
-            await self._verify_sources(source_assets.values(), principal, space_id)
+            with span("source_validation"):
+                await self._verify_sources(source_assets.values(), principal, space_id)
+            fact('index_snapshot', [(key,signature,generation) for key,signature,generation,_ in snapshots], dimensions=(("provider", self.provider_id), ("revision", self.model_identity)))
             dense_enabled=self.retrieval is None or self.retrieval['vector_weight']>0
             q=None
             if dense_enabled:
-                raw=await asyncio.to_thread(self.embedder.embed,[query]);q=self._vectors(raw,1)[0]
+                with span("query_embedding"):
+                    raw=await asyncio.to_thread(self.embedder.embed,[query]);q=self._vectors(raw,1)[0]
             candidate_limit=max(limit,self.retrieval['candidate_limit']) if self.retrieval is not None else limit
             candidates=[]
             for rows,location in groups:
@@ -341,8 +346,10 @@ class LocalVectorIndex:
                     candidates.extend(rows)
                     continue
                 vectors=[json.loads(row['embedding_json']) for row in rows]
-                await asyncio.to_thread(self.storage.verify,location[1],vectors)
-                hits=await asyncio.to_thread(self.storage.search,location[1],q,candidate_limit)
+                with span("milvus_verification"):
+                    await asyncio.to_thread(self.storage.verify,location[1],vectors)
+                with span("milvus_search"):
+                    hits=await asyncio.to_thread(self.storage.search,location[1],q,candidate_limit)
                 if not isinstance(hits,(list,tuple)) or len(hits)!=min(candidate_limit,len(rows)):
                     raise RetrievalIndexNotReady('Remote vector results are incomplete')
                 seen=set()
@@ -366,17 +373,22 @@ class LocalVectorIndex:
                 dense.append((positions[item['chunk_id']],score))
             dense.sort(key=lambda item:(-item[1],item[0]))
             ranked=dense[:candidate_limit]
+            ranks("dense", ranked, all_rows)
             if self.retrieval is not None:
                 if len(all_rows)>10000 or sum(len(row['text'].encode('utf-8')) for row in all_rows)>_MAX_TOTAL_BYTES:
                     raise RetrievalIndexNotReady('Hybrid corpus exceeds verification bound')
                 from knowledge_platform.retrieval.hybrid import bm25_rank,rrf_fuse
-                lexical=(await asyncio.to_thread(bm25_rank,query,[row['text'] for row in all_rows],candidate_limit)
-                    if self.retrieval['bm25_weight']>0 else [])
+                with span("bm25"):
+                    lexical=(await asyncio.to_thread(bm25_rank,query,[row['text'] for row in all_rows],candidate_limit)
+                        if self.retrieval['bm25_weight']>0 else [])
+                ranks("bm25", lexical, all_rows)
                 ranked=rrf_fuse([[i for i,_ in ranked],[i for i,_ in lexical]],
                     [self.retrieval['vector_weight'],self.retrieval['bm25_weight']],self.retrieval['rrf_k'],candidate_limit)
+                ranks("rrf", ranked, all_rows)
                 if self.reranker is not None and ranked:
                     pool=[all_rows[i] for i,_ in ranked]
-                    reranked=await asyncio.to_thread(self.reranker.rerank,query,[row['text'] for row in pool],min(limit,len(pool)))
+                    with span("rerank"):
+                        reranked=await asyncio.to_thread(self.reranker.rerank,query,[row['text'] for row in pool],min(limit,len(pool)))
                     if not isinstance(reranked,(list,tuple)) or len(reranked)!=min(limit,len(pool)):
                         raise RetrievalIndexNotReady('Reranker returned incomplete results')
                     seen=set();ordered=[]
@@ -389,9 +401,12 @@ class LocalVectorIndex:
                             raise RetrievalIndexNotReady('Reranker returned invalid identity or score')
                         seen.add(ordinal);ordered.append((ranked[ordinal][0],float(score)))
                     ranked=sorted(ordered,key=lambda item:(-item[1],item[0]))
+                    ranks("rerank", ranked, all_rows)
             # Verify again after fusion/rerank, which may await model HTTP.
-            await self._verify_sources(source_assets.values(), principal, space_id)
-            self._verify_publications(snapshots)
+            with span("source_validation"):
+                await self._verify_sources(source_assets.values(), principal, space_id)
+            with span("publication_validation"):
+                self._verify_publications(snapshots)
             results=[]
             for ordinal,score in ranked[:limit]:
                 item=all_rows[ordinal]

@@ -24,7 +24,8 @@ _MANIFEST = "workspace.json"
 _LOCK = ".workspace.lock"
 _INITIALIZING = ".initializing"
 _PROCESSING = "processing"
-_SQLITE_AUXILIARY = {"catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal"}
+_SQLITE_AUXILIARY = {"catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal",
+    "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal"}
 _MAX_MANIFEST_BYTES = 1024 * 1024
 
 
@@ -283,7 +284,7 @@ def open_persistent_workspace(
     try:
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
-        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki")]
+        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
         allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", _PROCESSING, *_SQLITE_AUXILIARY}

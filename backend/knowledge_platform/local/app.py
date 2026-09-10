@@ -168,14 +168,18 @@ def _build_app(
     if feishu is not None and any(item['selection']['kind']=='bitable' for item in feishu.config.values()):
         from knowledge_platform.transport.bitable_adapters import BitableMcpQueryAdapter
         mcp = BitableMcpQueryAdapter(rest, bitable=feishu.bitable, query_result_artifact=query_result_artifact, semantic_markdown=semantic_markdown)
+    from knowledge_platform.retrieval.trace import current_correlation
+    from knowledge_platform.local.trace_store import SqliteTraceSink
+    from knowledge_platform.local.tracing import install_tracing
     app = create_platform_app(
         query_adapter=rest,
         admin_adapter=admin,
         job_adapter=jobs,
         mcp_adapter=mcp,
         principal_provider=lambda: principal,
-        correlation_provider=lambda: Correlation("phase8-local-platform-http-shadow"),
+        correlation_provider=current_correlation,
     )
+    install_tracing(app, SqliteTraceSink(repository._database_path.parent / "retrieval-traces.sqlite3"), principal)
     if read_later is not None:
         from knowledge_platform.transport.fastapi_capture_router import create_capture_router
         app.include_router(create_capture_router(read_later, principal_provider=lambda: principal, wiki_compilation=wiki_compilation))

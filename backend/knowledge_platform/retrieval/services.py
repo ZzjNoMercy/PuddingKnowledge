@@ -24,6 +24,7 @@ from knowledge_platform.catalog.service import CatalogQueryService
 from knowledge_platform.evidence.normalizer import DeterministicCitationNormalizer
 from knowledge_platform.evidence.ports import BlobReader, CitationNormalizer
 
+from .trace import traced_query
 from .ports import QueryResultScopeReader, RetrievalIndexNotReady, RetrievalProvider, RetrievalProviderError
 
 _MAX_QUERY_LENGTH = 512
@@ -611,6 +612,7 @@ class _ProviderQueryService:
         self._normalizer = normalizer or DeterministicCitationNormalizer()
         self._capability = capability
 
+    @traced_query
     async def query(
         self,
         *,
