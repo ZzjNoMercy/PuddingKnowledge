@@ -56,6 +56,7 @@ def _build_app(
     wiki_blob_reader: Any | None = None,
     read_later: Any | None = None,
     feishu: Any | None = None,
+    files: Any | None = None,
 ):
     catalog = CatalogQueryService(repository)
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
@@ -70,6 +71,15 @@ def _build_app(
     if read_later is not None:
         from knowledge_platform.local.read_later import CaptureBlobReader
         reader = CaptureBlobReader(repository, read_later, reader)
+    if files is not None:
+        from knowledge_platform.local.files import FileBlobReader
+        reader=FileBlobReader(repository,files,reader)
+        asset_upload=files
+    def derivative_targets(asset_id):
+        result={}
+        for source in (feishu,files):
+            if source is not None:result.update(source.derivative_targets(asset_id))
+        return result
     asset_read = AssetReadService(catalog=repository, reader=reader)
     derivative_bindings = {
         str(asset.get("id")): ("normalized_markdown",)
@@ -77,14 +87,18 @@ def _build_app(
         if str(asset.get("kind") or "") == "wiki_page" and str(asset.get("id")) in bindings
     }
     wiki = WikiQueryService(provider, repository)
-    document = DocumentRetrievalService(provider, repository)
+    document_provider=provider
+    if files is not None:
+        from knowledge_platform.local.file_index import FileIndexProvider
+        document_provider=FileIndexProvider(repository,files)
+    document = DocumentRetrievalService(document_provider, repository)
     rest = RestQueryAdapter(
         catalog=catalog,
         search=CatalogSearchService(catalog),
         asset_read=asset_read,
         derivatives=AssetDerivativeService(
             catalog=catalog, asset_read=asset_read, bindings=derivative_bindings,
-            derivative_resolver=feishu.derivative_targets if feishu is not None else None
+            derivative_resolver=derivative_targets if feishu is not None or files is not None else None
         ),
         document=document,
         wiki=wiki,
@@ -94,7 +108,8 @@ def _build_app(
         table=table_query,
         knowledge_query=KnowledgeQueryRouter(
             catalog=repository,
-            engines=build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql),
+            engines=build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
+                document=document if files is not None else None,document_provider_id='knowledge_local_files' if files is not None else None),
         ),
         deployment=deployment,
     )
@@ -136,6 +151,9 @@ def _build_app(
         app.include_router(create_feishu_router(feishu, principal_provider=lambda: principal))
         from knowledge_platform.transport.fastapi_bitable_router import create_bitable_router
         app.include_router(create_bitable_router(feishu.bitable, principal_provider=lambda: principal))
+    if files is not None:
+        from knowledge_platform.transport.fastapi_files_router import create_files_router
+        app.include_router(create_files_router(files,principal_provider=lambda:principal))
     return app
 
 

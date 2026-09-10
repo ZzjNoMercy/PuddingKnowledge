@@ -318,7 +318,10 @@ class RestAdminAdapter:
                 request = AssetUploadRequest.from_mapping(body)
             except (TypeError, ValueError):
                 return _error(correlation, QueryErrorCode.INVALID_REQUEST, "Asset upload request is invalid")
-            return self._asset_upload.stage(principal=principal, correlation=correlation, request=request).to_dict()
+            import inspect
+            result=self._asset_upload.stage(principal=principal, correlation=correlation, request=request)
+            if inspect.isawaitable(result): result=await result
+            return result.to_dict()
         if method == "POST" and path == "/v1/packages:import":
             if self._package_import is None:
                 return _error(correlation, QueryErrorCode.CAPABILITY_UNAVAILABLE, "Package import is unavailable")

@@ -102,12 +102,14 @@ def rewrite_media(markdown: bytes | str, replacements: Mapping[str, str]) -> byt
     """
     text = markdown.decode("utf-8") if isinstance(markdown, bytes) else markdown
     if not isinstance(text, str): raise MinerUError("Markdown is invalid")
+    source_refs=set(_raw_references(text.encode(),allow_knowledge_uri=True))
     def replace_destination(raw: str) -> str:
         if raw.startswith("<") and raw.endswith(">"):
             value = raw[1:-1]; wrapped = True
         else: value = raw; wrapped = False
+        if value not in source_refs and urllib.parse.unquote(value) not in source_refs:return raw
         if urllib.parse.urlparse(value).scheme or value.startswith("//"):
-            if value.startswith("knowledge://") and value in replacements: return raw
+            if value.startswith("knowledge://") and value in replacements:return replacements[value]
             raise MinerUError("Markdown contains an external media URL")
         target = replacements.get(value) or replacements.get(urllib.parse.unquote(value))
         if target is None: raise MinerUError("Markdown contains an unsupported or unrewritten media reference")
@@ -118,6 +120,8 @@ def rewrite_media(markdown: bytes | str, replacements: Mapping[str, str]) -> byt
     text = html.sub(lambda m: m.group(1) + replace_destination(m.group("dest")) + m.group(3), text)
     definition = re.compile(r"(?m)^(\s*\[[^\]]+\]:\s+)(?P<dest><[^>]+>|[^\s]+)(.*)$")
     text = definition.sub(lambda m: m.group(1) + replace_destination(m.group("dest")) + m.group(3), text)
+    if set(_raw_references(text.encode(),allow_knowledge_uri=True))-set(replacements.values()):
+        raise MinerUError("Markdown contains an unbound media destination")
     return text.encode("utf-8")
 
 
@@ -128,7 +132,7 @@ class MinerUClient:
         parsed = urllib.parse.urlparse(endpoint)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("MinerU endpoint must be an HTTP loopback URL")
-        if timeout <= 0 or timeout > 300:
+        if type(timeout) not in (int,float) or not math.isfinite(timeout) or timeout <= 0 or timeout > 300:
             raise ValueError("MinerU timeout is invalid")
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
@@ -158,9 +162,10 @@ class MinerUClient:
         chunks = bytearray()
         async with asyncio.timeout(self.timeout):
             async with httpx.AsyncClient(timeout=None, trust_env=False, follow_redirects=False, transport=self.transport) as client:
-                async with client.stream("POST", self.endpoint + "/file_parse", files=files, data=data) as response:
+                async with client.stream("POST", self.endpoint + "/file_parse", files=files, data=data, headers={"Accept-Encoding":"identity"}) as response:
                     if response.status_code < 200 or response.status_code >= 300:
                         raise MinerUError(f"MinerU HTTP request failed ({response.status_code})")
+                    if response.headers.get("content-encoding", "identity").lower()!="identity":raise MinerUError("MinerU compression is unsupported")
                     expected = response.headers.get("content-length")
                     expected_length = int(expected) if expected is not None else None
                     if expected_length is not None and expected_length > self.limits.max_response_bytes:

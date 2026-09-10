@@ -407,3 +407,66 @@ This phase supplies one explicit local parser route. Cloud ParserRegistry routin
 remote parse-job checkpoints, Office formats, larger-file support, index activation,
 and a production MinerU deployment remain separate work. Tests use a real local
 HTTP protocol fixture, not an installed production MinerU service.
+
+### Persistent file import and local full-text retrieval
+
+`--file-config /absolute/files.json` enables the existing `POST /v1/assets:upload`
+Admin edge as a persistent processing pipeline. It requires `--state-dir`.
+Configuration is owned by Knowledge and declares local input bindings, parser
+selection, and the Collection used by the local index:
+
+```json
+{
+  "version": 1,
+  "collection_id": "uploaded_files",
+  "bindings": [
+    {"id": "manual", "path": "/absolute/manual.docx", "space_id": "space_kb_default"}
+  ],
+  "parsers": [
+    {"id": "native", "enabled": true, "priority": 10},
+    {"id": "mineru_local", "endpoint": "http://127.0.0.1:8000", "timeout": 60}
+  ]
+}
+```
+
+A binding may additionally select one configured `parser_id`. Requests carry
+`asset_id`, `space_id`, `title`, `filename`, `mime_type`, `binding_id`,
+`content_digest` (the original bytes' `sha256:` digest), and `idempotency_key`.
+They cannot supply a path, parser endpoint, credentials, or arbitrary options.
+The Admin and target Space scopes are checked before reading the binding, and
+all path components are opened with `O_NOFOLLOW`.
+
+The native parser supports UTF-8 Markdown/text, CSV/TSV as document tables, and
+DOCX paragraphs/tables/package images. CSV/TSV document retrieval does not claim
+typed structured query support. DOCX external image relations and unsafe or
+missing package images are rejected. PDF uses the explicitly configured MinerU
+adapter. Unsupported files fail visibly rather than being relabeled Markdown.
+Input and individual stored objects are currently limited to 8 MiB.
+
+Import creates a durable `file_import` ingestion job. Original bytes, normalized
+Markdown, images, derivative pointers, a content-versioned Collection binding,
+and FTS5 chunks are published in one Catalog transaction. The local trigram
+index supports both Latin and Chinese substring phrases; queries shorter than
+three characters use the chunk table. Search verifies current publication,
+source digest, chunk content, and Catalog revision before returning evidence.
+This is real local lexical retrieval; it does not claim vector embedding,
+semantic reranking, or a Milvus deployment.
+
+Use `GET /v1/files/jobs/{job_id}` for status. Repeating the exact upload request
+reuses its job; changing any request field, principal, or host configuration
+requires a new key. Failed/cancelled jobs may retry the same request. The OS
+lock releases on process death, while a Catalog lease fence prevents an old
+worker from publishing after ownership changes. A successful replacement
+revokes old derivative reads and removes its old search chunks atomically.
+Failed replacement leaves the previous publication searchable and readable.
+
+Read original/derivatives through the existing Asset REST/MCP resource surface.
+Query via `POST /v1/document-rag/query`, MCP `document_rag_query`, or
+`POST /v1/knowledge/query` with the configured `collection_id` and
+`capability_hint=document_rag_query`. Wiki keeps its separate provider.
+
+The deploy CLI forwards `--file-config` through its installed supervisor to the
+runtime. This phase does not replace package import/export, remote/cloud parser
+job recovery, vector index activation, or production upgrade/rollback gates.
+Unreferenced immutable objects from interrupted processing are not exposed;
+owned object garbage collection remains required before long-running production.

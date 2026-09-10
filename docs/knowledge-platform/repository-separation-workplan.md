@@ -162,3 +162,24 @@ not been run.
   full indexing/semantic lifecycle, production authentication and stateful release
   gates. This does not complete the full repository separation goal or activate
   production. See persistent-local-runtime.md for explicit supported scope.
+
+### Persistent file ingestion / local full-text index closure (2026-09-10)
+
+- Reused the Admin `assets:upload` contract with explicit host bindings and
+  persistent SQLite ingestion jobs. Full request/principal/config fingerprints,
+  anchored file reads, per-job/Asset locks, and lease fencing protect publication.
+- Added configured async ParserRegistry, native UTF-8/CSV/TSV/DOCX processing
+  including internal DOCX images, and the existing explicit local MinerU route.
+- Original/normalized/image Assets, derivative mappings, versioned Collection
+  provider binding and FTS5 chunks activate in one Catalog transaction. File
+  retrieval now uses an actual document provider rather than Wiki-only search.
+- Real process tests prove REST/MCP/unified query, source replacement and stale
+  read/index revocation, restart replay, and SIGKILL during parsing with a fenced
+  second attempt. Missing index rows fail closed instead of reporting no matches.
+- Final related backend regression: 197 passed. Source-external non-editable
+  installation: 15 passed. Deploy CLI: 40 passed. Actual stage/deploy/install/
+  supervisor/start/import/query/stop/restart/replay succeeds without altering seed
+  Catalog; the job stays at attempt 1 during successful replay.
+- Remaining: cloud/general parser breadth and remote task checkpoints, package
+  import/export, vector indexing/reranking, object GC and production identity,
+  stateful upgrade/rollback. The full two-repository objective stays incomplete.

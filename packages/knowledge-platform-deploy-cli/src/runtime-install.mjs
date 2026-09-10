@@ -148,7 +148,7 @@ export async function runtimeCommand(command, home, flags = {}) {
     for (const name of ['catalog', 'wiki_root', 'port']) {
       if (!flags[name]) throw error(`start requires --${name.replaceAll('_', '-')}`, 'argument_error');
     }
-    for (const name of ['catalog', 'wiki_root', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config']) {
+    for (const name of ['catalog', 'wiki_root', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config', 'file_config']) {
       if (flags[name]) args.push(`--${name.replaceAll('_', '-')}`, String(flags[name]));
     }
   }

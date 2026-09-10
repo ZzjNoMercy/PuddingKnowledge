@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
     parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
     parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
@@ -97,6 +98,12 @@ def main() -> int:
             structured_config = load_structured_config(args.structured_config)
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local structured configuration\n")
+    file_config = None
+    if args.file_config:
+        if args.state_dir is None:parser.error('file-config requires state-dir')
+        from knowledge_platform.local.files import load_file_config
+        try:file_config=load_file_config(args.file_config)
+        except (ValueError,OSError,TypeError):parser.exit(2,'Invalid local file configuration\n')
     feishu_config = None
     if args.feishu_config:
         if args.state_dir is None:
@@ -160,6 +167,11 @@ def main() -> int:
             except Exception:
                 parser.exit(2, "Local structured binding failed; check approved Assets and source digests\n")
             structured_scopes = STRUCTURED_SCOPES
+        files = None
+        if file_config is not None:
+            from knowledge_platform.local.files import LocalFileService
+            try:files=LocalFileService(file_config,catalog,args.state_dir/'processing')
+            except Exception:parser.exit(2,'Local file binding is unavailable\n')
         feishu = None
         if feishu_config is not None:
             from knowledge_platform.local.feishu import LocalFeishuService
@@ -188,7 +200,7 @@ def main() -> int:
             *database_scopes,
             *structured_scopes,
             *(("knowledge.processing",) if wiki_config or read_later else ()),
-            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu else ()),
+            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files else ()),
         ))
         app = _build_app(
             SqliteCatalogQueryRepository(catalog), materialized["file_bindings"], principal,
@@ -197,6 +209,7 @@ def main() -> int:
             **wiki_services,
             read_later=read_later,
             feishu=feishu,
+            files=files,
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )
@@ -216,6 +229,7 @@ def main() -> int:
             json.dump({"status": "ready", "pages": materialized["pages"],
                        "activation_allowed": False, "database_configured": bool(database_config),
                        "structured_configured": bool(structured_config),
+                       "files_configured": files is not None,
                        "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
         try:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])

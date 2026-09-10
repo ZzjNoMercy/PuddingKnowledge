@@ -128,3 +128,19 @@ test('bare running output is not live supervisor evidence', async t => {
   await writeFile(path.join(home, 'runtime/installed.json'), JSON.stringify({ schema_version: 1, runtime_manifest_digest: staged.runtime_manifest_digest, status: 'installed_not_running', activation_allowed: false }));
   await assert.rejects(runtimeCommand('status', home), /invalid control evidence/);
 });
+
+test('start forwards explicit host-bound file config into the installed runtime', async t => {
+  const { home, staged } = await fixture(t);
+  const digest = staged.runtime_manifest_digest.slice(7);
+  const bin = path.join(home, 'environments', digest, 'bin');
+  await mkdir(bin, { recursive: true });
+  const python = path.join(bin, 'python');
+  await writeFile(python, '#!/usr/bin/env node\nif (!process.argv.includes("--file-config") || !process.argv.includes(process.env.EXPECT_FILE_CONFIG)) process.exit(9);\nconsole.log(JSON.stringify({format:"puddingknowledge-local-supervisor/v1",status:"stopped"}));\n', { mode: 0o700 });
+  await writeFile(path.join(home, 'runtime/installed.json'), JSON.stringify({ schema_version: 1, runtime_manifest_digest: staged.runtime_manifest_digest, status: 'installed_not_running', activation_allowed: false }));
+  const fileConfig = path.join(home, 'file-config.json');
+  await writeFile(fileConfig, JSON.stringify({ version: 1, bindings: [], parsers: [{ id: 'native' }], collection_id: 'uploaded_files' }));
+  process.env.EXPECT_FILE_CONFIG = fileConfig;
+  t.after(() => { delete process.env.EXPECT_FILE_CONFIG; });
+  const observed = await runtimeCommand('start', home, { catalog: path.join(home, 'catalog.db'), wiki_root: path.join(home, 'wiki'), port: 19001, file_config: fileConfig });
+  assert.equal(observed.status, 'stopped');
+});

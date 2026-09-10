@@ -47,7 +47,7 @@ function parseArgs(argv) {
     }
     const value = inline ?? argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PlatformCliError(`missing value for --${rawName}`, { code: "argument_error" });
-    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config"].includes(name)) {
+    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config"].includes(name)) {
       throw new PlatformCliError(`unknown option: --${rawName}`, { code: "argument_error" });
     }
     flags[name] = value;
@@ -60,7 +60,7 @@ function usage() {
     "Knowledge Platform CLI",
     "",
     "  knowledge-platform install [--home <absolute-path>] [--apply] [--json]",
-    "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--apply] [--json]",
+    "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--file-config <absolute-path>] [--apply] [--json]",
     "  knowledge-platform stop [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform init [--home <absolute-path>] [--force] [--json]",
     "  knowledge-platform status [--home <absolute-path>] [--json]",
