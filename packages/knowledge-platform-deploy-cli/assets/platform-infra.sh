@@ -8,7 +8,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/compose.platform.yml"
-PROJECT_NAME="puddingknowledge"
+PROJECT_NAME="${PUDDINGKNOWLEDGE_PROJECT_NAME:-puddingknowledge}"
+if [[ ! "${PROJECT_NAME}" =~ ^puddingknowledge(-[a-z0-9][a-z0-9_-]*)?$ ]]; then
+    echo "PUDDINGKNOWLEDGE_PROJECT_NAME must be puddingknowledge or puddingknowledge-<suffix>" >&2
+    exit 2
+fi
 
 usage() {
     cat <<'EOF'
@@ -21,6 +25,8 @@ Knowledge Platform infrastructure supervisor
 
 PUDDINGKNOWLEDGE_HOME and all required Compose secret/image inputs must be
 provided by the operator. No defaults contain credentials.
+Use PUDDINGKNOWLEDGE_PROJECT_NAME=puddingknowledge-<suffix> with a distinct
+Home and ports for a separate instance. Reuse the same name for its lifecycle.
 EOF
 }
 
@@ -72,6 +78,18 @@ require_real_directory() {
     done
 }
 
+require_project_owner() {
+    local ids id owner
+    ids="$(docker ps -aq --filter "label=com.docker.compose.project=${PROJECT_NAME}")"
+    for id in ${ids}; do
+        owner="$(docker inspect --format '{{ index .Config.Labels "io.puddingknowledge.home" }}' "${id}")"
+        if [[ "${owner}" != "${PUDDINGKNOWLEDGE_HOME}" ]]; then
+            echo "Compose project contains a container not owned by this Platform Home; refusing lifecycle action" >&2
+            exit 2
+        fi
+    done
+}
+
 compose() {
     docker compose --project-name "${PROJECT_NAME}" --file "${COMPOSE_FILE}" "$@"
 }
@@ -84,10 +102,12 @@ case "${command}" in
         ;;
     up)
         require_home
+        require_project_owner
         compose up -d
         ;;
     down)
         require_home
+        require_project_owner
         compose down
         ;;
     status)

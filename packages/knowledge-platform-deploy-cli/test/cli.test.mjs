@@ -650,7 +650,7 @@ test("Platform Compose validator rejects legacy references, missing required sec
   const compose = await readFile(new URL("../assets/compose.platform.yml", import.meta.url), "utf8");
   const valid = validateComposeAsset(compose);
   assert.match(valid.digest, /^sha256:[0-9a-f]{64}$/);
-  assert.throws(() => validateComposeAsset(compose.replace("puddingknowledge-api", "puddingclaw-api")), /legacy Claw/);
+  assert.throws(() => validateComposeAsset(compose.replace("name: puddingknowledge", "name: puddingclaw")), /legacy Claw/);
   assert.throws(
     () => validateComposeAsset(compose.replace("PUDDINGKNOWLEDGE_API_IMAGE:?set PUDDINGKNOWLEDGE_API_IMAGE", "PUDDINGKNOWLEDGE_API_IMAGE:latest")),
     /secret input is not required/,

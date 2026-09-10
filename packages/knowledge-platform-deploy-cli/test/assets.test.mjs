@@ -9,12 +9,13 @@ import { spawn } from "node:child_process";
 const { files } = createRequire(import.meta.url)("../package.json");
 const supervisorPath = path.resolve(import.meta.dirname, "../assets/platform-infra.sh");
 
-async function runSupervisor(home, bin, command = "plan", argsFile = null) {
+async function runSupervisor(home, bin, command = "plan", argsFile = null, project = "puddingknowledge") {
   const child = spawn(supervisorPath, [command], {
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       PUDDINGKNOWLEDGE_HOME: home,
+      PUDDINGKNOWLEDGE_PROJECT_NAME: project,
       PUDDINGKNOWLEDGE_POSTGRES_USER: "test-user",
       PUDDINGKNOWLEDGE_POSTGRES_PASSWORD: "test-password",
       PUDDINGKNOWLEDGE_MINIO_ROOT_USER: "test-minio",
@@ -115,6 +116,17 @@ test("Platform infrastructure supervisor maps explicit lifecycle commands to Pla
       assert.deepEqual(args.slice(-expected.length), expected);
       assert.doesNotMatch(args.join(" ").toLowerCase(), /docker-compose\.infra|start-local-infra/);
     }
+    const isolated = await runSupervisor(home, bin, "status", argsFile, "puddingknowledge-proof");
+    assert.equal(isolated.code, 0);
+    const isolatedArgs = (await readFile(argsFile, "utf8")).trim().split(/\r?\n/);
+    assert.equal(isolatedArgs[2], "puddingknowledge-proof");
+    for (const project of ["puddingclaw", "puddingknowledge;echo", "puddingknowledge-", "../puddingknowledge"]) {
+      const invalid = await runSupervisor(home, bin, "down", argsFile, project);
+      assert.equal(invalid.code, 2);
+      assert.match(invalid.stderr, /PROJECT_NAME/);
+      assert.equal(await readFile(argsFile, "utf8"), isolatedArgs.join("\n") + "\n");
+    }
+
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(bin, { recursive: true, force: true });
