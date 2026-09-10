@@ -351,7 +351,11 @@ class RestAdminAdapter:
                 request = IndexRebuildRequest(**{key: body[key] for key in required})
             except (TypeError, ValueError):
                 return _error(correlation, QueryErrorCode.INVALID_REQUEST, "Index rebuild request is invalid")
-            return self._index_rebuild.rebuild(principal=principal, correlation=correlation, request=request).to_dict()
+            import inspect
+            result = self._index_rebuild.rebuild(principal=principal, correlation=correlation, request=request)
+            if inspect.isawaitable(result):
+                result = await result
+            return result.to_dict()
         if method == "GET" and path == "/v1/connector-authorizations":
             if self._connector_authorization is None:
                 return _error(correlation, QueryErrorCode.CAPABILITY_UNAVAILABLE, "Connector authorization is unavailable")

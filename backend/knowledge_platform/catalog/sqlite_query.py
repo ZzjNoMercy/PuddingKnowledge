@@ -334,6 +334,17 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
             if capability in result.setdefault(key, {}):
                 raise ValueError("Collection provider binding is duplicated")
             result[key][capability] = {str(k): str(v) for k, v in binding.items()}
+        # A derived query index must not replace ingestion ownership. Its
+        # atomic active generation supplies the effective retrieval binding.
+        if cls._has_table(connection, "knowledge_local_vector_indexes"):
+            seen = set()
+            for row in connection.execute("SELECT space_id,collection_id,collection_version,capability FROM knowledge_local_vector_indexes WHERE status='active'"):
+                key = (str(row["space_id"]), str(row["collection_id"]), str(row["collection_version"]))
+                capability = str(row["capability"])
+                if capability not in {"document_rag_query", "wiki_query"} or (*key, capability) in seen:
+                    raise ValueError("Active vector binding is ambiguous")
+                seen.add((*key, capability))
+                result.setdefault(key, {})[capability] = {"provider_id": "knowledge_local_vector"}
         return result
 
     @classmethod

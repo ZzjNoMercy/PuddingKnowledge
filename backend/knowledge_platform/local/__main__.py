@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--index-config", type=Path, help="explicit embedding and local index configuration; requires state-dir")
     parser.add_argument("--package-config", type=Path, help="explicit Package import/export bindings; requires state-dir")
     parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
@@ -99,6 +100,15 @@ def main() -> int:
             structured_config = load_structured_config(args.structured_config)
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local structured configuration\n")
+    index_config = None
+    if args.index_config:
+        if args.state_dir is None:
+            parser.error('index-config requires state-dir')
+        from knowledge_platform.local.index_config import load_index_config
+        try:
+            index_config = load_index_config(args.index_config)
+        except (ValueError, OSError, TypeError):
+            parser.exit(2, 'Invalid local index configuration\n')
     package_config = None
     if args.package_config:
         if args.state_dir is None:
@@ -214,10 +224,11 @@ def main() -> int:
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
             *(f"knowledge.space:{space}" for space in (package_config or {}).get("space_ids", [])),
+            *(f"knowledge.space:{space}" for space in (index_config or {}).get("space_ids", [])),
             *database_scopes,
             *structured_scopes,
             *(("knowledge.processing",) if wiki_config or read_later else ()),
-            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files or packages else ()),
+            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files or packages or index_config else ()),
         ))
         app = _build_app(
             SqliteCatalogQueryRepository(catalog), materialized["file_bindings"], principal,
@@ -229,6 +240,7 @@ def main() -> int:
             files=files,
             packages=packages,
             package_config=package_config,
+            index_config=index_config,
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )
@@ -253,7 +265,7 @@ def main() -> int:
                        "activation_allowed": False, "database_configured": bool(database_config),
                        "structured_configured": bool(structured_config),
                        "files_configured": files is not None,
-                       "packages_configured": packages is not None,
+                       "packages_configured": packages is not None, "index_configured": index_config is not None,
                        "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
         try:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])

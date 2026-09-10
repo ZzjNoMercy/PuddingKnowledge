@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, realpath, symlink } f
 import os from 'node:os';
 import path from 'node:path';
 import { initialize, stageDeployment } from '../src/state.mjs';
-import { installRuntime, checkedPath, runtimeCommand } from '../src/runtime-install.mjs';
+import { installRuntime, checkedPath, runtimeCommand, packageCommand } from '../src/runtime-install.mjs';
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'knowledge-install-')));
@@ -143,4 +143,35 @@ test('start forwards explicit host-bound file config into the installed runtime'
   t.after(() => { delete process.env.EXPECT_FILE_CONFIG; });
   const observed = await runtimeCommand('start', home, { catalog: path.join(home, 'catalog.db'), wiki_root: path.join(home, 'wiki'), port: 19001, file_config: fileConfig });
   assert.equal(observed.status, 'stopped');
+});
+
+test('start forwards index config and index posts exact body with ownership header', async t => {
+  const { home, staged } = await fixture(t);
+  const digest = staged.runtime_manifest_digest.slice(7);
+  const bin = path.join(home, 'environments', digest, 'bin');
+  await mkdir(bin, { recursive: true });
+  const python = path.join(bin, 'python');
+  await writeFile(python, '#!/usr/bin/env node\nif (!process.argv.includes("--index-config") || !process.argv.includes(process.env.EXPECT_INDEX_CONFIG)) process.exit(9);\nconsole.log(JSON.stringify({format:"puddingknowledge-local-supervisor/v1",status:"stopped"}));\n', { mode: '700' });
+  await writeFile(path.join(home, 'runtime/installed.json'), JSON.stringify({ schema_version: 1, runtime_manifest_digest: staged.runtime_manifest_digest, status: 'installed_not_running', activation_allowed: false }));
+  const indexConfig = path.join(home, 'index-config.json');
+  process.env.EXPECT_INDEX_CONFIG = indexConfig;
+  t.after(() => { delete process.env.EXPECT_INDEX_CONFIG; });
+  const observed = await runtimeCommand('start', home, { catalog: path.join(home, 'catalog.db'), wiki_root: path.join(home, 'wiki'), port: 19003, index_config: indexConfig });
+  assert.equal(observed.status, 'stopped');
+
+  await writeFile(python, '#!/usr/bin/env node\nconsole.log(JSON.stringify({format:"puddingknowledge-local-supervisor/v1",status:"running",active:true,health:true,ownership_verified:true,manager_pid:1,child_pid:2,port:19004,run_dir:"/tmp/0123456789abcdef0123456789abcdef"}));\n', { mode: '700' });
+  const received = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    received.push({ url, options });
+    return new Response(JSON.stringify({ status: 'ok', data: { accepted: true } }), { status: 200, headers: { 'Content-Type': 'application/json', 'X-PuddingKnowledge-Instance': '0123456789abcdef0123456789abcdef' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const body = { space_id: 's', collection_id: 'c', collection_version: 'v1', capability: 'document_rag_query', provider_id: 'knowledge_local_vector', idempotency_key: 'k' };
+  await packageCommand('index', home, body);
+  assert.equal(received[0].url, 'http://127.0.0.1:19004/v1/indexes:rebuild');
+  assert.deepEqual(JSON.parse(received[0].options.body), body);
+  assert.equal(received[0].options.headers['X-PuddingKnowledge-Expected-Instance'], '0123456789abcdef0123456789abcdef');
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: 'ok', data: {} }), { status: 200, headers: { 'X-PuddingKnowledge-Instance': 'wrong-instance' } });
+  await assert.rejects(packageCommand('index', home, body), /ownership or response/);
 });

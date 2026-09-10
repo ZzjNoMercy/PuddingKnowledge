@@ -59,6 +59,7 @@ def _build_app(
     files: Any | None = None,
     packages: Any | None = None,
     package_config: dict | None = None,
+    index_config: dict | None = None,
 ):
     catalog = CatalogQueryService(repository)
     structured_paths = dict(getattr(getattr(table_query, '_provider', None), 'paths', {}))
@@ -106,6 +107,15 @@ def _build_app(
         document_provider=FileIndexProvider(repository,files)
         if packages is not None:
             document_provider = _CombinedWikiProvider(document_provider, PackageRetrievalProvider(packages, repository))
+    vector_index = None
+    if index_config is not None:
+        from knowledge_platform.local.index_config import embedding_client
+        from knowledge_platform.local.vector_index import LocalVectorIndex
+        vector_index = LocalVectorIndex(repository._database_path, repository, reader,
+            embedding_client(index_config), index_config)
+        index_rebuild = vector_index
+        document_provider = _CombinedWikiProvider(_VectorProvider(vector_index, 'document_rag_query', principal=principal), document_provider)
+        wiki = WikiQueryService(_CombinedWikiProvider(_VectorProvider(vector_index, 'wiki_query', principal=principal), provider), repository)
     document = DocumentRetrievalService(document_provider, repository)
     engines = dict(build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
         document=document if files is not None else None,
@@ -113,6 +123,9 @@ def _build_app(
     if packages is not None:
         for capability in ("wiki_query", "document_rag_query"):
             engines[capability] = _PackageQueryEngine(capability, packages, repository, engines.get(capability))
+    if vector_index is not None:
+        for capability in ('wiki_query', 'document_rag_query'):
+            engines[capability] = _VectorQueryEngine(capability, vector_index, repository, engines.get(capability))
     rest = RestQueryAdapter(
         catalog=catalog,
         search=CatalogSearchService(catalog),
@@ -248,3 +261,33 @@ class _CombinedBlobReader:
         asset_id = request.resource_uri.rsplit('/', 1)[-1]
         reader = self.initial if asset_id in self.initial_ids else self.published
         return await reader.read(request)
+
+
+class _VectorProvider:
+    def __init__(self, index, capability, collection=None, principal=None):
+        self.index, self.capability, self.collection, self.principal = index, capability, collection, principal
+
+    async def search(self, *, query, space_id, limit):
+        return await self.index.search(query=query, space_id=space_id, limit=limit, capability=self.capability, principal=self.principal,
+            collection_id=self.collection.collection_id if self.collection is not None else None,
+            collection_version=self.collection.version if self.collection is not None else None)
+
+
+class _VectorQueryEngine:
+    def __init__(self, capability, index, repository, fallback):
+        self.capability, self.index, self.repository, self.fallback = capability, index, repository, fallback
+
+    async def query(self, *, request, collection, principal, correlation):
+        if collection.provider_bindings.get(self.capability) == {'provider_id':'knowledge_local_vector'}:
+            from knowledge_platform.router.local import LocalServiceQueryEngine
+            provider = _VectorProvider(self.index, self.capability, collection, principal=principal)
+            service = (WikiQueryService(provider, self.repository) if self.capability == 'wiki_query'
+                       else DocumentRetrievalService(provider, self.repository))
+            return await LocalServiceQueryEngine(capability=self.capability, service=service,
+                provider_id='knowledge_local_vector').query(request=request, collection=collection,
+                    principal=principal, correlation=correlation)
+        if self.fallback is not None:
+            return await self.fallback.query(request=request, collection=collection, principal=principal, correlation=correlation)
+        from knowledge_contracts import QueryResult, QueryError, QueryErrorCode
+        return QueryResult(status='error',trace_id=correlation.trace_id,
+            error=QueryError(code=QueryErrorCode.BINDING_UNAVAILABLE,message='Collection provider binding is unavailable'))

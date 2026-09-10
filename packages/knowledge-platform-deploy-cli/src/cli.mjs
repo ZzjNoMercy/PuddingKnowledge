@@ -47,7 +47,7 @@ function parseArgs(argv) {
     }
     const value = inline ?? argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PlatformCliError(`missing value for --${rawName}`, { code: "argument_error" });
-    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "package_ref", "output_ref", "package_id", "package_version", "collections", "idempotency_key"].includes(name)) {
+    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "index_config", "package_ref", "output_ref", "package_id", "package_version", "collections", "idempotency_key", "space_id", "collection_id", "collection_version", "capability", "provider_id"].includes(name)) {
       throw new PlatformCliError(`unknown option: --${rawName}`, { code: "argument_error" });
     }
     flags[name] = value;
@@ -63,6 +63,7 @@ function usage() {
     "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--file-config <absolute-path>] [--apply] [--json]",
     "  knowledge-platform import --package-ref <host-binding> --idempotency-key <key> --apply [--json]",
     "  knowledge-platform export --output-ref <host-binding> --package-id <id> --package-version <version> --collections <json> --apply [--json]",
+    "  knowledge-platform index --space-id <id> --collection-id <id> --collection-version <version> --capability <name> --provider-id <id> --idempotency-key <key> --apply [--json]",
     "  knowledge-platform stop [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform init [--home <absolute-path>] [--force] [--json]",
     "  knowledge-platform status [--home <absolute-path>] [--json]",
@@ -121,6 +122,13 @@ async function main(argv) {
       }
     }
     return { value: await packageCommand(command, home, body), code: 0 };
+  }
+  if (command === "index") {
+    const allowed = new Set(["home", "apply", "json", "space_id", "collection_id", "collection_version", "capability", "provider_id", "idempotency_key"]);
+    if (Object.keys(flags).some((key) => !allowed.has(key))) throw new PlatformCliError("index received an unrelated option", { code: "argument_error" });
+    for (const key of ["space_id", "collection_id", "collection_version", "capability", "provider_id", "idempotency_key"]) if (typeof flags[key] !== "string" || !flags[key]) throw new PlatformCliError(`index requires --${key.replaceAll("_", "-")}`, { code: "argument_error" });
+    if (!flags.apply) return { value: plan(command, home), code: 0 };
+    return { value: await packageCommand("index", home, { space_id: flags.space_id, collection_id: flags.collection_id, collection_version: flags.collection_version, capability: flags.capability, provider_id: flags.provider_id, idempotency_key: flags.idempotency_key }), code: 0 };
   }
   if (command === "status" || command === "health") {
     const metadata = command === "status" ? await status(home) : await health(home);
