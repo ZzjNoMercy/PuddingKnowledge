@@ -1,6 +1,7 @@
 import { createPlatformClient } from "./contracts.mjs";
 import { formatDisplayError, safeDisplayText, safeDisplayValue } from "./display-boundary.mjs";
 import { assertLocalShadowBaseUrl, localShadowApiUrlFromPageUrl } from "./local-boundary.mjs";
+import { createBitableSurface, renderBitablePanel } from "./bitable.mjs";
 
 const byId = (id) => document.getElementById(id);
 const baseUrl = byId("base-url");
@@ -52,6 +53,22 @@ try {
 }
 
 let databasePlan = null;
+function bitableClient() {
+  const selectedSpace = spaceId.value.trim();
+  if (selectedSpace && selectedSpace !== 'space_kb_default') throw new TypeError('当前 Bitable 数据源属于默认 Space，请清空 Space 筛选或选择 space_kb_default');
+  return client();
+}
+const bitableSurface = createBitableSurface({ api: {
+  listBitableSources: (...args) => bitableClient().listBitableSources(...args),
+  getBitablePolicy: (...args) => bitableClient().getBitablePolicy(...args),
+  getBitableRelations: (...args) => bitableClient().getBitableRelations(...args),
+  getBitableSchema: (...args) => bitableClient().getBitableSchema(...args),
+  queryBitable: (...args) => bitableClient().queryBitable(...args),
+  updateBitablePolicy: (...args) => bitableClient().updateBitablePolicy(...args),
+  syncSource: (...args) => bitableClient().syncSource(...args),
+} });
+baseUrl.addEventListener("input", () => { bitableSurface.reset(); clear(byId("bitable-sources")); });
+spaceId.addEventListener("input", () => { bitableSurface.reset(); clear(byId("bitable-sources")); });
 
 function setStatus(message, isError = false) {
   status.textContent = message;
@@ -910,6 +927,15 @@ async function authorizeConnector() {
 }
 
 discoverButton.addEventListener("click", discover);
+byId("bitable-refresh")?.addEventListener("click", () => void bitableSurface.refresh().catch(() => {}));
+byId("bitable-sync")?.addEventListener("click", async () => {
+  const sourceId = bitableSurface.state.sourceId;
+  if (!sourceId) return;
+  const button = byId("bitable-sync"); button.disabled = true;
+  try { await bitableSurface.syncSchema(); }
+  catch { /* Controller displays the safe error and clears stale results. */ }
+  finally { button.disabled = false; }
+});
 askButton.addEventListener("click", ask);
 observeButton.addEventListener("click", observeFreshness);
 readQueryResultButton.addEventListener("click", readQueryResult);
@@ -939,6 +965,9 @@ byId("clear").addEventListener("click", () => {
   clear(databasePlanPreview);
   clear(databaseResultPreview);
   clear(databaseSchemaPreview);
+  bitableSurface.reset();
+  clear(byId("bitable-sources"));
+  clear(byId("bitable-surface"));
   databasePlan = null;
   setStatus("");
 });
@@ -971,4 +1000,5 @@ export {
   renderNotifications,
   refreshAuthorizations,
   authorizeConnector,
+  bitableSurface,
 };

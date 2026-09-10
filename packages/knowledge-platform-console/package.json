@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test test/console.test.mjs",
+    "test": "node --test test/console.test.mjs test/bitable.test.mjs",
     "test:database": "node --test test/database-http-smoke.test.mjs",
     "test:database:vanna": "node --test test/vanna-database-http-smoke.test.mjs"
   },

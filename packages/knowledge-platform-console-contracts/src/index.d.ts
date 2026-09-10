@@ -127,6 +127,12 @@ export interface PlatformClient {
   compileWiki(assetId: string, body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   processCapture(assetId: string, body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   projectGbrain(assetId: string, body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
+  listBitableSources(options?: RequestOptions): Promise<QueryResult>;
+  getBitablePolicy(sourceId: string, options?: RequestOptions): Promise<QueryResult>;
+  updateBitablePolicy(sourceId: string, policy: { tables: Array<{ table_id: string; view_id: string }>; relations: Array<Record<string, unknown>> }, expectedRevision: string, options?: RequestOptions): Promise<QueryResult>;
+  getBitableSchema(sourceId: string, tableId: string, options?: RequestOptions): Promise<QueryResult>;
+  getBitableRelations(sourceId: string, options?: RequestOptions): Promise<QueryResult>;
+  queryBitable(sourceId: string, body: { table_id: string; schema_revision: string; field_names: string[]; page_size: number; cursor: string }, options?: RequestOptions): Promise<QueryResult>;
   syncSource(connectorId: string, body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
 }
 

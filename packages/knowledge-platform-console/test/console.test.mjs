@@ -12,13 +12,14 @@ test("Console build is standalone, content-addressed, and non-activatable", asyn
     const manifest = await build({ outputDir });
     assert.equal(manifest.status, "built_not_deployed");
     assert.equal(manifest.activation_allowed, false);
-    for (const file of ["index.html", "app.mjs", "local-boundary.mjs", "display-boundary.mjs", "contracts.mjs", "manifest.json"]) {
+    for (const file of ["index.html", "app.mjs", "local-boundary.mjs", "display-boundary.mjs", "bitable.mjs", "contracts.mjs", "manifest.json"]) {
       const content = await readFile(path.join(outputDir, file), "utf8");
       assert.ok(content.length > 0, file);
       assert.equal(content.includes("PuddingClaw"), false, file);
     }
     assert.deepEqual((await readdir(outputDir)).sort(), [
       "app.mjs",
+      "bitable.mjs",
       "contracts.mjs",
       "display-boundary.mjs",
       "index.html",
@@ -107,6 +108,15 @@ test("Console shell renders text through DOM APIs instead of HTML injection", as
   assert.match(source, /uploadAsset/);
   assert.match(source, /importPackage/);
   assert.match(source, /rebuildIndex/);
+  assert.match(source, /createBitableSurface/);
+  assert.match(source, /listBitableSources/);
+  const bitable = await readFile(new URL("../src/bitable.mjs", import.meta.url), "utf8");
+  assert.match(bitable, /textContent/);
+  assert.doesNotMatch(bitable, /innerHTML/);
+  assert.match(bitable, /generation/);
+  assert.match(bitable, /next_cursor/);
+  assert.match(bitable, /expectedRevision/);
+  assert.match(bitable, /实时行不会保存|行数据.*不会保存/);
   assert.match(await readFile(new URL("../../knowledge-platform-console-contracts/src/index.mjs", import.meta.url), "utf8"), /query:.*\/v1\/query/);
   assert.doesNotMatch(source, /innerHTML/);
 });

@@ -45,9 +45,11 @@ def create_mcp_router(
     @router.post("")
     async def mcp(
         request: Request,
+        response: Response,
         current_principal: Principal = Depends(principal),
         current_correlation: Correlation = Depends(correlation),
     ):
+        response.headers["Cache-Control"] = "no-store"
         try:
             body = await request.json()
         except (TypeError, ValueError):

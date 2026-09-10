@@ -203,7 +203,7 @@ def main() -> int:
         if args.console_origin:
             from fastapi.middleware.cors import CORSMiddleware
             app.add_middleware(CORSMiddleware, allow_origins=[args.console_origin.rstrip("/")],
-                               allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["content-type"])
+                               allow_methods=["GET", "POST", "PUT", "OPTIONS"], allow_headers=["content-type"])
         if args.instance_id is not None:
             instance_id = args.instance_id
 

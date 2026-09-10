@@ -314,3 +314,47 @@ canary across independent process restart. No row cache or full-table download i
 implemented. Dedicated Console flows, external MCP exposure, separate preview and
 relation CRUD compatibility endpoints, media and production acceptance remain
 unfinished; this checkpoint does not declare complete Feishu parity.
+
+## Bitable external MCP and Console
+
+When a Bitable source is configured, `/mcp` now advertises four optional read-only
+Tools: `feishu_bitable_list_sources`, `feishu_bitable_describe`,
+`feishu_bitable_relations`, and `feishu_bitable_query`. These share the REST read
+adapter, authorization and QueryResult contract. Tools accept registered
+`source_id` values, never credentials or caller principals. Query arguments are
+`source_id`, `table_id`, `schema_revision`, `field_names`, `page_size`, `cursor`;
+use an empty cursor for the first page. The descriptor supplies exact JSON Schema
+and privacy/structure-evidence semantics. Policy and OAuth mutations are not MCP
+Tools. Responses use `Cache-Control: no-store`.
+
+A generic MCP client discovers these capabilities without local business Tool
+registration. An independently installed PuddingHarness consumer has been tested
+with its temporary Home config pointing to the standalone Platform endpoint;
+its dynamically discovered names have the configured server prefix, for example
+`platform_feishu_bitable_query`. No Bitable implementation or Feishu credentials
+were added to Harness. HTTP protocol tests also cover a Docx-only runtime, which
+does not advertise Bitable Tools, and isolation of broken source metadata.
+
+The independent Console now has a Bitable section using the public REST client:
+read sources, select a source, synchronize schema, inspect a table, choose exact
+fields and page size, query one page and continue with the current cursor. Source,
+table, API origin, Space filter, field and page-size changes discard stale results
+and pagination. Overlapping or failed requests cannot publish an old response
+into the new selection. A table whose schema requires synchronization cannot be
+queried through the UI until synchronization succeeds.
+
+The scope editor can remove every table (deny all), add a visible table by ID,
+and change its view. The server remains authoritative for visibility and policy
+revision checks. An empty view means the whole selected table, not a default
+view. Relations are edited as declarations from the policy, separately from
+schema validation output. Save and sync invalidate the displayed schema and
+rows. Query rows remain only in browser memory; the Console does not persist or
+export them. Server responses and errors are rendered through text APIs.
+
+This closes the local Bitable MCP/Console path; it does not establish production
+multi-user authentication, provider-side row snapshot isolation, or complete
+Feishu/Knowledge parity. Remaining platform work includes media/Drive parsers,
+Lark, resumable per-item sync, real Semantic processing, import/export/index,
+stateful upgrade/rollback and production continuity. Dedicated legacy preview or
+relation CRUD URLs are not implemented; the current Console uses the canonical
+single-page query and atomic policy update APIs.

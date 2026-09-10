@@ -78,6 +78,8 @@ def test_real_process_feishu_sync_read_restart(tmp_path,remote):
                     except OSError: pass
                 time.sleep(.05)
             else: raise AssertionError('Feishu runtime did not become ready')
+            listed=request('/mcp',{'jsonrpc':'2.0','id':71,'method':'tools/list','params':{}})
+            assert not any(tool['name'].startswith('feishu_bitable_') for tool in listed['result']['tools'])
             assert result['status']=='ok',result
             assert result['data']['sync']['changed']==1
             import sqlite3

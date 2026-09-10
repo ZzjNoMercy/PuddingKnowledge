@@ -48,6 +48,7 @@ export async function build({ outputDir = defaultOutput } = {}) {
     "app.mjs": await readFile(path.join(packageRoot, "src", "app.mjs")),
     "local-boundary.mjs": await readFile(path.join(packageRoot, "src", "local-boundary.mjs")),
     "display-boundary.mjs": await readFile(path.join(packageRoot, "src", "display-boundary.mjs")),
+    "bitable.mjs": await readFile(path.join(packageRoot, "src", "bitable.mjs")),
     "contracts.mjs": await readFile(contractPath),
   };
   try {

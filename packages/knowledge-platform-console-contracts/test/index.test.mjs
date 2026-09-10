@@ -451,3 +451,19 @@ test("Console Admin client exposes fixed Platform routes and rejects host file f
     /not portable/,
   );
 });
+
+test("Bitable client preserves registered identities and conditional scope body", async () => {
+  const calls = [];
+  const api = createPlatformClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl: async (url, options) => {
+    calls.push({ url, options }); return new Response(JSON.stringify(okResult()), { status: 200 });
+  } });
+  await api.listBitableSources(); await api.getBitablePolicy("source1");
+  await api.updateBitablePolicy("source1", { tables: [], relations: [] }, "revision1");
+  await api.getBitableSchema("source1", "table1"); await api.getBitableRelations("source1");
+  await api.queryBitable("source1", { table_id: "table1", schema_revision: "s1", field_names: ["Name"], page_size: 1, cursor: "opaque" });
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/v1/bitable/sources");
+  assert.deepEqual(JSON.parse(calls[2].options.body), { policy: { tables: [], relations: [] }, expected_revision: "revision1" });
+  assert.equal(calls[2].options.method, "PUT");
+  assert.equal(JSON.parse(calls[5].options.body).cursor, "opaque");
+  assert.throws(() => api.getBitableSchema("../source", "table1"));
+});

@@ -115,11 +115,15 @@ def _build_app(
             notifications=notifications,
             asset_binding_review_queue=asset_binding_review_queue,
         )
+    mcp = McpQueryAdapter(rest, query_result_artifact=query_result_artifact, semantic_markdown=semantic_markdown)
+    if feishu is not None and any(item['selection']['kind']=='bitable' for item in feishu.config.values()):
+        from knowledge_platform.transport.bitable_adapters import BitableMcpQueryAdapter
+        mcp = BitableMcpQueryAdapter(rest, bitable=feishu.bitable, query_result_artifact=query_result_artifact, semantic_markdown=semantic_markdown)
     app = create_platform_app(
         query_adapter=rest,
         admin_adapter=admin,
         job_adapter=jobs,
-        mcp_adapter=McpQueryAdapter(rest, query_result_artifact=query_result_artifact, semantic_markdown=semantic_markdown),
+        mcp_adapter=mcp,
         principal_provider=lambda: principal,
         correlation_provider=lambda: Correlation("phase8-local-platform-http-shadow"),
     )

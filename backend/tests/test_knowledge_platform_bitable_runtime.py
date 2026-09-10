@@ -1,6 +1,7 @@
 """Real Feishu Bitable wire protocol through an independently started runtime."""
 import json
 import os
+import asyncio
 from pathlib import Path
 import socket
 import subprocess
@@ -128,6 +129,7 @@ def test_real_process_bitable_schema_live_query_policy_restart_and_cursor_fence(
                 "--wiki-root", str(wiki),
                 "--state-dir", str(state), "--temp-dir", str(tmp_path / f"temp-{turn}"),
                 "--ready-file", str(ready), "--port", str(port), "--feishu-config", str(config),
+                "--console-origin", "http://127.0.0.1:9999",
             ], cwd="/private/tmp", env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             for _ in range(200):
                 if proc.poll() is not None:
@@ -138,6 +140,14 @@ def test_real_process_bitable_schema_live_query_policy_restart_and_cursor_fence(
             else:
                 pytest.fail("Bitable runtime did not become ready")
 
+            preflight=Request(f"http://127.0.0.1:{port}/v1/sources/bitable_fixture/bitable/policy", method="OPTIONS", headers={"Origin":"http://127.0.0.1:9999","Access-Control-Request-Method":"PUT","Access-Control-Request-Headers":"content-type"})
+            with urlopen(preflight,timeout=5) as response:
+                assert response.status==200
+                assert response.headers['Access-Control-Allow-Origin']=='http://127.0.0.1:9999'
+                assert 'PUT' in response.headers['Access-Control-Allow-Methods']
+            foreign=Request(preflight.full_url,method="OPTIONS",headers={"Origin":"http://127.0.0.1:9998","Access-Control-Request-Method":"PUT"})
+            with pytest.raises(HTTPError) as rejected:urlopen(foreign,timeout=5)
+            assert rejected.value.code==400
             if turn == 0:
                 sync = request("/v1/sources/bitable_fixture:sync", {"idempotency_key": "bitable-schema", "mode": "full"}, "POST")
                 assert sync["status"] == "ok", sync
@@ -162,6 +172,24 @@ def test_real_process_bitable_schema_live_query_policy_restart_and_cursor_fence(
                 assert query["data"]["records"][0]["fields"]["Name"] == "ROW-CANARY"
                 assert query["data"]["has_more"] is True and query["data"]["next_cursor"]
                 old_cursor = query["data"]["next_cursor"]
+
+                async def generic_mcp_query():
+                    import httpx
+                    from langchain_mcp_adapters.client import MultiServerMCPClient
+                    def factory(*, headers=None, timeout=None, auth=None):
+                        return httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
+                            transport=httpx.AsyncHTTPTransport(), headers=headers, timeout=timeout, auth=auth)
+                    client = MultiServerMCPClient({"platform": {
+                        "transport": "streamable-http", "url": f"http://127.0.0.1:{port}/mcp",
+                        "httpx_client_factory": factory}}, tool_name_prefix=True)
+                    tools = await client.get_tools(server_name="platform")
+                    query_tool = next(tool for tool in tools if tool.name == "platform_feishu_bitable_query")
+                    return await query_tool.ainvoke({"source_id": "bitable_fixture", "table_id": "tbl_cars",
+                        "schema_revision": revision, "field_names": ["Name", "Count"], "page_size": 1, "cursor": ""})
+
+                mcp_query = asyncio.run(generic_mcp_query())
+                assert "ROW-CANARY" in str(mcp_query)
+                assert "ROW-CANARY" not in (state / "catalog.sqlite3").read_bytes().decode("utf-8", "ignore")
                 policy = request("/v1/sources/bitable_fixture/bitable/policy")
                 shrunk = request("/v1/sources/bitable_fixture/bitable/policy", {
                     "expected_revision": policy["data"]["policy_revision"],
@@ -182,7 +210,7 @@ def test_real_process_bitable_schema_live_query_policy_restart_and_cursor_fence(
                 assert persisted["data"]["tables"] == []
                 assert persisted["data"]["row_storage"] is False
                 proc.terminate(); proc.wait(timeout=10); proc = None
-        assert sum(path.endswith("/records") or "/records?" in path for _, path in calls) == 1
+        assert sum(path.endswith("/records") or "/records?" in path for _, path in calls) == 2
         assert catalog.read_bytes() == original_catalog
         assert all(b"ROW-CANARY" not in path.read_bytes() for path in state.rglob("*") if path.is_file())
         assert b"BITABLE_SECRET_349" not in (state / "catalog.sqlite3").read_bytes()

@@ -34,7 +34,14 @@
       .evidence code { color: #334f96; word-break: break-all; }
       pre { background: #f5f7fa; border-radius: 8px; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
       @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
-    </style>
+      #bitable-surface .asset-row { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:10px 0; }
+    #bitable-surface input[type="checkbox"] { width:auto; margin:0; flex:none; }
+    #bitable-surface label { display:inline-flex; gap:6px; align-items:center; margin:6px 14px 6px 0; }
+    #bitable-surface [data-role="table-view"], #bitable-surface [data-role="new-table"], #bitable-surface [data-role="new-view"] { width:min(100%,240px); margin:6px 8px 6px 0; }
+    #bitable-surface [data-role="page-size"] { width:90px; }
+    #bitable-surface button { margin:6px 8px 6px 0; }
+    #bitable-surface h3 { overflow-wrap:anywhere; }
+  </style>
   </head>
   <body>
     <main>
@@ -171,6 +178,13 @@
           <button id="authorize-connector" type="button">创建待授权意图</button>
         </div>
         <div id="connector-authorizations"></div>
+      </section>
+      <section>
+        <h2>Bitable 实时操作</h2>
+        <p>仅操作当前授权 Source 的 Schema、范围和实时行查询。行数据只返回当前调用者，不保存到 Platform；空范围会明确拒绝全部表。</p>
+        <div class="actions"><button id="bitable-refresh" type="button">读取 Bitable Sources</button><button id="bitable-sync" class="secondary" type="button">同步 Schema</button></div>
+        <div id="bitable-sources"></div>
+        <div id="bitable-surface"></div>
       </section>
       <section>
         <h2>Upload / Package Import</h2>

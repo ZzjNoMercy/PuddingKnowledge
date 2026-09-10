@@ -382,5 +382,11 @@ export function createPlatformClient({ baseUrl = "", fetchImpl = globalThis.fetc
     processCapture: (assetId, body = {}, { signal } = {}) => request("POST", `/v1/captures/assets/${assertId(assetId, "assetId")}:process`, body, signal),
     projectGbrain: (assetId, body = {}, { signal } = {}) => request("POST", `/v1/wiki/assets/${assertId(assetId, "assetId")}:project-gbrain`, body, signal),
     syncSource: (connectorId, body = {}, { signal } = {}) => request("POST", `/v1/sources/${assertId(connectorId, "connectorId")}:sync`, body, signal),
+    listBitableSources: ({ signal } = {}) => request("GET", "/v1/bitable/sources", undefined, signal),
+    getBitablePolicy: (sourceId, { signal } = {}) => request("GET", `/v1/sources/${assertId(sourceId, "sourceId")}/bitable/policy`, undefined, signal),
+    updateBitablePolicy: (sourceId, policy, expectedRevision, { signal } = {}) => request("PUT", `/v1/sources/${assertId(sourceId, "sourceId")}/bitable/policy`, { policy, expected_revision: expectedRevision }, signal),
+    getBitableSchema: (sourceId, tableId, { signal } = {}) => request("GET", `/v1/sources/${assertId(sourceId, "sourceId")}/bitable/tables/${assertId(tableId, "tableId")}/schema`, undefined, signal),
+    getBitableRelations: (sourceId, { signal } = {}) => request("GET", `/v1/sources/${assertId(sourceId, "sourceId")}/bitable/relations`, undefined, signal),
+    queryBitable: (sourceId, body = {}, { signal } = {}) => request("POST", `/v1/sources/${assertId(sourceId, "sourceId")}/bitable/query`, body, signal),
   });
 }
