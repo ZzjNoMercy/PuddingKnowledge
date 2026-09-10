@@ -230,6 +230,7 @@ def _child_command(
     capture_config: Path | None = None,
     feishu_config: Path | None = None,
     file_config: Path | None = None,
+    package_config: Path | None = None,
 ) -> list[str]:
     runtime = [
         sys.executable,
@@ -252,7 +253,7 @@ def _child_command(
         runtime.extend(("--database-config", str(database_config)))
     if structured_config is not None:
         runtime.extend(("--structured-config", str(structured_config)))
-    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config), ("capture-config", capture_config), ("feishu-config", feishu_config), ("file-config", file_config)):
+    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config), ("capture-config", capture_config), ("feishu-config", feishu_config), ("file-config", file_config), ("package-config", package_config)):
         if value is not None:
             runtime.extend(("--" + name, str(value)))
     return [
@@ -405,6 +406,7 @@ def _manager_main(args: argparse.Namespace) -> int:
                     capture_config=Path(args.capture_config) if args.capture_config else None,
                     feishu_config=Path(args.feishu_config) if args.feishu_config else None,
                     file_config=Path(args.file_config) if args.file_config else None,
+                    package_config=Path(args.package_config) if args.package_config else None,
                 ),
                 cwd=home,
                 stdin=subprocess.DEVNULL,
@@ -561,7 +563,7 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if args.database_config:
             command.extend(("--database-config", str(Path(args.database_config))))
-        for name in ("state_dir", "wiki_config", "capture_config", "feishu_config", "file_config"):
+        for name in ("state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config"):
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(("--" + name.replace("_", "-"), str(value)))
@@ -626,6 +628,7 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--capture-config", type=Path)
             sub.add_argument("--feishu-config", type=Path)
             sub.add_argument("--file-config", type=Path)
+            sub.add_argument("--package-config", type=Path)
     manager = subparsers.add_parser("_manager")
     for name in ("home", "catalog", "wiki-root", "run-dir"):
         manager.add_argument("--" + name, required=True)
@@ -638,6 +641,7 @@ def _parser() -> argparse.ArgumentParser:
     manager.add_argument("--capture-config")
     manager.add_argument("--feishu-config")
     manager.add_argument("--file-config")
+    manager.add_argument("--package-config")
     return parser
 
 

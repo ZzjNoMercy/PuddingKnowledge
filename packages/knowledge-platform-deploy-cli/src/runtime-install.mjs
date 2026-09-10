@@ -148,7 +148,7 @@ export async function runtimeCommand(command, home, flags = {}) {
     for (const name of ['catalog', 'wiki_root', 'port']) {
       if (!flags[name]) throw error(`start requires --${name.replaceAll('_', '-')}`, 'argument_error');
     }
-    for (const name of ['catalog', 'wiki_root', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config', 'file_config']) {
+    for (const name of ['catalog', 'wiki_root', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config', 'file_config', 'package_config']) {
       if (flags[name]) args.push(`--${name.replaceAll('_', '-')}`, String(flags[name]));
     }
   }
@@ -175,4 +175,28 @@ export async function runtimeCommand(command, home, flags = {}) {
     throw error('Runtime running state has no live ownership and health evidence');
   }
   return observed;
+}
+
+/** Execute a host-bound Package operation on this Home's live owned runtime. */
+export async function packageCommand(command, home, body) {
+  if (!['import', 'export'].includes(command)) throw error('Invalid Package operation', 'argument_error');
+  const observed = await runtimeCommand('status', home);
+  const instance = path.basename(observed.run_dir || '');
+  if (observed.status !== 'running' || !Number.isInteger(observed.port)
+      || observed.port < 1 || observed.port > 65535 || !/^[0-9a-f]{32}$/.test(instance)) {
+    throw error('Package operations require a healthy owned runtime');
+  }
+  const response = await fetch(`http://127.0.0.1:${observed.port}/v1/packages:${command}`, {
+    method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', 'X-PuddingKnowledge-Expected-Instance': instance },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(120000),
+  });
+  if (response.headers.get('X-PuddingKnowledge-Instance') !== instance || !response.ok) {
+    throw error('Package runtime ownership or response is invalid');
+  }
+  let result;
+  try { result = await response.json(); } catch { throw error('Package response is invalid'); }
+  if (result?.status !== 'ok' || !result.data || typeof result.data !== 'object') {
+    throw error(result?.error?.message || 'Package operation failed', 'package_operation_failed');
+  }
+  return result;
 }

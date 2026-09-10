@@ -57,6 +57,8 @@ def _build_app(
     read_later: Any | None = None,
     feishu: Any | None = None,
     files: Any | None = None,
+    packages: Any | None = None,
+    package_config: dict | None = None,
 ):
     catalog = CatalogQueryService(repository)
     provider = LocalPublishedWikiProvider(catalog=repository, asset_paths=bindings)
@@ -75,9 +77,15 @@ def _build_app(
         from knowledge_platform.local.files import FileBlobReader
         reader=FileBlobReader(repository,files,reader)
         asset_upload=files
+    if packages is not None:
+        from knowledge_platform.local.package_import import PackageBlobReader, PackageRetrievalProvider
+        from knowledge_platform.local.packages import BoundPackageImport
+        package_import = BoundPackageImport(packages, package_config)
+        reader = PackageBlobReader(repository, packages, reader)
+        provider = _CombinedWikiProvider(provider, PackageRetrievalProvider(packages, repository))
     def derivative_targets(asset_id):
         result={}
-        for source in (feishu,files):
+        for source in (feishu,files,packages):
             if source is not None:result.update(source.derivative_targets(asset_id))
         return result
     asset_read = AssetReadService(catalog=repository, reader=reader)
@@ -91,14 +99,22 @@ def _build_app(
     if files is not None:
         from knowledge_platform.local.file_index import FileIndexProvider
         document_provider=FileIndexProvider(repository,files)
+        if packages is not None:
+            document_provider = _CombinedWikiProvider(document_provider, PackageRetrievalProvider(packages, repository))
     document = DocumentRetrievalService(document_provider, repository)
+    engines = dict(build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
+        document=document if files is not None else None,
+        document_provider_id='knowledge_local_files' if files is not None else None))
+    if packages is not None:
+        for capability in ("wiki_query", "document_rag_query"):
+            engines[capability] = _PackageQueryEngine(capability, packages, repository, engines.get(capability))
     rest = RestQueryAdapter(
         catalog=catalog,
         search=CatalogSearchService(catalog),
         asset_read=asset_read,
         derivatives=AssetDerivativeService(
             catalog=catalog, asset_read=asset_read, bindings=derivative_bindings,
-            derivative_resolver=derivative_targets if feishu is not None or files is not None else None
+            derivative_resolver=derivative_targets if feishu is not None or files is not None or packages is not None else None
         ),
         document=document,
         wiki=wiki,
@@ -108,8 +124,7 @@ def _build_app(
         table=table_query,
         knowledge_query=KnowledgeQueryRouter(
             catalog=repository,
-            engines=build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
-                document=document if files is not None else None,document_provider_id='knowledge_local_files' if files is not None else None),
+            engines=engines,
         ),
         deployment=deployment,
     )
@@ -154,6 +169,12 @@ def _build_app(
     if files is not None:
         from knowledge_platform.transport.fastapi_files_router import create_files_router
         app.include_router(create_files_router(files,principal_provider=lambda:principal))
+    if packages is not None:
+        from knowledge_platform.local.package_export import PackageExportService
+        from knowledge_platform.transport.fastapi_packages_router import create_packages_router
+        app.include_router(create_packages_router(publisher=packages,
+            exporter=PackageExportService(repository, reader), config=package_config,
+            principal_provider=lambda: principal))
     return app
 
 
@@ -168,6 +189,29 @@ class _CombinedWikiProvider:
         initial = await self.initial.search(query=query, space_id=space_id, limit=limit)
         seen = {item.asset_id for item in current}
         return (current + tuple(item for item in initial if item.asset_id not in seen))[:limit]
+
+
+class _PackageQueryEngine:
+    """Resolve package bindings separately from installed live providers."""
+    def __init__(self, capability, publisher, repository, fallback):
+        self.capability, self.publisher = capability, publisher
+        self.repository, self.fallback = repository, fallback
+
+    async def query(self, *, request, collection, principal, correlation):
+        from knowledge_contracts import QueryError, QueryErrorCode, QueryResult
+        binding = collection.provider_bindings.get(self.capability)
+        if binding == {"provider_id": "knowledge_package"}:
+            from knowledge_platform.local.package_import import PackageRetrievalProvider
+            from knowledge_platform.router.local import LocalServiceQueryEngine
+            provider = PackageRetrievalProvider(self.publisher, self.repository, asset_ids=collection.asset_ids)
+            service = (WikiQueryService(provider, self.repository) if self.capability == "wiki_query"
+                       else DocumentRetrievalService(provider, self.repository))
+            engine = LocalServiceQueryEngine(capability=self.capability, service=service, provider_id="knowledge_package")
+            return await engine.query(request=request, collection=collection, principal=principal, correlation=correlation)
+        if self.fallback is not None:
+            return await self.fallback.query(request=request, collection=collection, principal=principal, correlation=correlation)
+        return QueryResult(status="error", trace_id=correlation.trace_id,
+            error=QueryError(code=QueryErrorCode.BINDING_UNAVAILABLE, message="Collection provider binding is unavailable"))
 
 
 class _CombinedBlobReader:

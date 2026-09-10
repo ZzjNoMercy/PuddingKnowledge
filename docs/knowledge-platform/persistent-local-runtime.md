@@ -470,3 +470,63 @@ runtime. This phase does not replace package import/export, remote/cloud parser
 job recovery, vector index activation, or production upgrade/rollback gates.
 Unreferenced immutable objects from interrupted processing are not exposed;
 owned object garbage collection remains required before long-running production.
+
+## Portable Package publication
+
+A persistent runtime can export explicitly selected Collections and import a
+verified portable Package into its own Catalog. Start it with `--package-config`
+(and `--state-dir`). The deploy CLI forwards this configuration through the
+installed supervisor. Paths are host bindings; REST callers select binding IDs.
+
+```json
+{
+  "version": 1,
+  "space_ids": ["space_kb_default"],
+  "imports": [{"id": "restore", "path": "/absolute/portable.zip", "digest": "sha256:<64 lowercase hex characters>"}],
+  "exports": [{"id": "snapshot", "path": "/absolute/new-snapshot.zip"}]
+}
+```
+
+An export requires a new output path and explicit Collection versions. The
+service reads the Catalog snapshot and current authorized object readers,
+includes original/normalized/image dependencies and portable semantic facts,
+checks content digests and Catalog revision, then publishes a validated ZIP
+without replacing an existing output. Runtime paths and credentials are not
+Package metadata. Optional original/derivative relation fields are validated
+for real same-Space targets and preserved through import.
+
+```bash
+knowledge-platform export --home /absolute/home --output-ref snapshot \
+  --package-id portable --package-version 1 \
+  --collections '[{"id":"uploaded_files","version":"<current Collection version>"}]' \
+  --apply --json
+knowledge-platform import --home /absolute/home --package-ref restore \
+  --idempotency-key restore-once --apply --json
+```
+
+The corresponding Admin operations are `POST /v1/packages:export` with
+`output_ref`, `package_id`, `version`, `collections`, and the existing
+`POST /v1/packages:import` with `package_ref`, `idempotency_key`. Import binds the
+request identity to the host input digest and caller scopes; changing either
+under the same key is refused. All imported Spaces require explicit scope and
+Admin authority. Tenant-scoped requests remain unavailable in this local mode.
+
+Import reads a bounded no-follow ZIP snapshot, validates its full manifest and
+checksums, writes content-addressed objects, and publishes Catalog assets,
+Collections, semantic facts, provider bindings and document chunks in one
+SQLite transaction. The Package revision is the immutable publication identity.
+A committed replay verifies its objects/index/bindings. A crash before commit
+leaves no partial Catalog publication and can be retried from the bound ZIP.
+Different revisions cannot overwrite existing Asset identities. Import does
+not activate a production deployment.
+
+Document and Wiki content can be queried through the normal REST/MCP and
+Collection query services after import and restart, including after the
+original input files are removed. Package chunks have a separate owner from
+the local file index; a later file upload cannot take over a Package Collection.
+This local provider currently supports document/Wiki retrieval. Packages that
+require unsupported Table or live database providers are explicitly refused;
+those provider rebuild/activation paths, general `index` execution, package
+revision replacement, orphan-object cleanup and stateful upgrade/rollback
+remain separate unfinished work. A Package is a portable knowledge artifact,
+not a backup of runtime jobs, sessions or credentials.

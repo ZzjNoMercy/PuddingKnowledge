@@ -329,7 +329,11 @@ class RestAdminAdapter:
                 request = PackageImportRequest.from_mapping(body)
             except (TypeError, ValueError):
                 return _error(correlation, QueryErrorCode.INVALID_REQUEST, "Package import request is invalid")
-            return self._package_import.stage(principal=principal, correlation=correlation, request=request).to_dict()
+            import inspect
+            result = self._package_import.stage(principal=principal, correlation=correlation, request=request)
+            if inspect.isawaitable(result):
+                result = await result
+            return result.to_dict()
         if method == "POST" and path == "/v1/indexes:rebuild":
             if self._index_rebuild is None:
                 return _error(correlation, QueryErrorCode.CAPABILITY_UNAVAILABLE, "Index rebuild is unavailable")

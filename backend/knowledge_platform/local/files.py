@@ -115,6 +115,15 @@ class LocalFileService:
             query=select(KnowledgeDataset).where(KnowledgeDataset.id==self.config['collection_id'])
             if space_id is not None:query=query.where(KnowledgeDataset.space_id==space_id)
             rows=list(session.scalars(query))
+            owned = []
+            for row in rows:
+                binding = session.get(KnowledgeCollectionBinding, (row.space_id, row.id, row.version, 'document_rag_query'))
+                if binding is not None and binding.binding_json == {'provider_id': 'knowledge_package'}:
+                    continue
+                if binding is None or binding.binding_json != {'provider_id': 'knowledge_local_files'}:
+                    raise ValueError('File Collection provider binding invalid')
+                owned.append(row)
+            rows = owned
             if not rows:return None
             if len({x.space_id for x in rows})!=len(rows) or any(x.kind!='local_file_index' for x in rows):raise ValueError('File Collection binding invalid')
             return {'asset_ids':sorted({asset_id for row in rows for asset_id in row.asset_ids}),
@@ -242,6 +251,10 @@ class LocalFileService:
         collection_id=self.config['collection_id']
         prior=list(session.scalars(select(KnowledgeDataset).where(KnowledgeDataset.space_id==space_id,KnowledgeDataset.id==collection_id)))
         if any(x.kind!='local_file_index' for x in prior):raise ValueError('Collection identity occupied')
+        for row in prior:
+            binding = session.get(KnowledgeCollectionBinding, (row.space_id, row.id, row.version, 'document_rag_query'))
+            if binding is None or binding.binding_json != {'provider_id': 'knowledge_local_files'}:
+                raise ValueError('Collection identity belongs to another provider')
         ids=[]
         for asset in session.scalars(select(KnowledgeAsset).where(KnowledgeAsset.space_id==space_id,KnowledgeAsset.source_type=='local_file',KnowledgeAsset.kind=='original_file')):
             ids.extend(asset.metadata_json.get('derivatives',{}).values())

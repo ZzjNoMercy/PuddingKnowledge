@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--asset-binding-review-queue", type=Path)
     parser.add_argument("--database-config", type=Path, help="explicit host-local PostgreSQL/Vanna configuration")
     parser.add_argument("--structured-config", type=Path, help="explicit local CSV/TSV asset bindings")
+    parser.add_argument("--package-config", type=Path, help="explicit Package import/export bindings; requires state-dir")
     parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
     parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
@@ -98,6 +99,15 @@ def main() -> int:
             structured_config = load_structured_config(args.structured_config)
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local structured configuration\n")
+    package_config = None
+    if args.package_config:
+        if args.state_dir is None:
+            parser.error("package-config requires state-dir")
+        from knowledge_platform.local.packages import load_package_config
+        try:
+            package_config = load_package_config(args.package_config)
+        except (ValueError, OSError, TypeError):
+            parser.exit(2, "Invalid Package configuration\n")
     file_config = None
     if args.file_config:
         if args.state_dir is None:parser.error('file-config requires state-dir')
@@ -167,6 +177,10 @@ def main() -> int:
             except Exception:
                 parser.exit(2, "Local structured binding failed; check approved Assets and source digests\n")
             structured_scopes = STRUCTURED_SCOPES
+        packages = None
+        if package_config is not None:
+            from knowledge_platform.local.package_import import LocalPackagePublisher
+            packages = LocalPackagePublisher(catalog, args.state_dir / "processing")
         files = None
         if file_config is not None:
             from knowledge_platform.local.files import LocalFileService
@@ -197,10 +211,11 @@ def main() -> int:
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
+            *(f"knowledge.space:{space}" for space in (package_config or {}).get("space_ids", [])),
             *database_scopes,
             *structured_scopes,
             *(("knowledge.processing",) if wiki_config or read_later else ()),
-            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files else ()),
+            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files or packages else ()),
         ))
         app = _build_app(
             SqliteCatalogQueryRepository(catalog), materialized["file_bindings"], principal,
@@ -210,6 +225,8 @@ def main() -> int:
             read_later=read_later,
             feishu=feishu,
             files=files,
+            packages=packages,
+            package_config=package_config,
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )
@@ -222,6 +239,10 @@ def main() -> int:
 
             @app.middleware("http")
             async def add_instance_identity(request, call_next):
+                expected = request.headers.get("X-PuddingKnowledge-Expected-Instance")
+                if expected is not None and expected != instance_id:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse({"error": "runtime instance changed"}, status_code=409)
                 response = await call_next(request)
                 response.headers["X-PuddingKnowledge-Instance"] = instance_id
                 return response
@@ -230,11 +251,14 @@ def main() -> int:
                        "activation_allowed": False, "database_configured": bool(database_config),
                        "structured_configured": bool(structured_config),
                        "files_configured": files is not None,
+                       "packages_configured": packages is not None,
                        "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
         try:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])
         finally:
             ready.unlink(missing_ok=True)
+            if packages is not None:
+                packages.close()
     return 0
 
 

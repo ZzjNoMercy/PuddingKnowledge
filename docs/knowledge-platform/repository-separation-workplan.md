@@ -183,3 +183,28 @@ not been run.
 - Remaining: cloud/general parser breadth and remote task checkpoints, package
   import/export, vector indexing/reranking, object GC and production identity,
   stateful upgrade/rollback. The full two-repository objective stays incomplete.
+
+### Persistent Package publication and installed CLI closure (2026-09-10)
+
+- Added real host-bound Package export and import to the independent runtime and
+  deploy CLI. Import uses the existing Admin DTO and persists request identity;
+  it no longer relies on a second route shadowed by the staging endpoint.
+- Export closes persisted original/normalized/image relationships, validates
+  same-Space targets, reads current object bytes and fences the Catalog snapshot.
+  Optional portable relation fields survive builder/validator/ZIP/import.
+- Import publishes owned objects, Assets, Collections, canonical semantic facts,
+  provider bindings and independent document chunks in one SQLite transaction.
+  Stable identities cannot overwrite another provider or Package revision.
+  Completed replay verifies content, metadata, relationships, chunks and bindings.
+- Real tests cover two runtime state directories, deletion of the source file,
+  query/read/derivative access after restart, SIGKILL before commit, replay,
+  semantic integrity, absent/forged chunks and Package-specific Space scope.
+- Final relevant backend regression: 105 passed. Non-editable installed tests
+  from outside the source tree: 22 passed. Deploy CLI suite: 40 passed.
+- Actual stage/deploy/install/supervisor/CLI export/import/query/restart proof:
+  226 runtime files, manifest digest
+  `sha256:b5c6dc630e25b204b3e6383a21568727c0ac3ad8d53f6a4b1f61e47bd721fcc7`.
+- This is local document/Wiki Package publication, not complete provider parity
+  or production migration. Table/live database Package rebuild, vector index
+  activation, revision replacement, orphan cleanup, full semantic authoring,
+  upgrade/rollback and formal release gates remain unfinished.

@@ -375,7 +375,7 @@ def _asset_record(asset: Mapping[str, Any], *, package_path: str) -> dict[str, A
     content_digest = str(asset.get("content_digest") or "")
     if not _DIGEST_RE.fullmatch(content_digest):
         raise PackageBuildError(f"asset {asset_id} has an invalid content digest")
-    return {
+    record = {
         "id": asset_id,
         "space_id": _safe_id(asset.get("space_id"), field="asset.space_id"),
         "kind": _portable_text(asset.get("kind"), field=f"asset {asset_id}.kind"),
@@ -393,6 +393,63 @@ def _asset_record(asset: Mapping[str, Any], *, package_path: str) -> dict[str, A
         "content_digest": content_digest,
         "package_path": package_path,
     }
+    # Relations are explicit Catalog metadata.  Never infer them from paths or
+    # filename conventions; absent fields remain absent for old packages.
+    if "original_asset_id" in asset:
+        original = asset["original_asset_id"]
+        if not isinstance(original, str) or not original:
+            raise PackageBuildError(f"asset {asset_id}.original_asset_id is invalid")
+        record["original_asset_id"] = _safe_id(original, field=f"asset {asset_id}.original_asset_id")
+    if "derivatives" in asset:
+        derivatives = asset["derivatives"]
+        if not isinstance(derivatives, Mapping):
+            raise PackageBuildError(f"asset {asset_id}.derivatives is invalid")
+        normalized: dict[str, str] = {}
+        for kind, target in derivatives.items():
+            if not isinstance(kind, str) or not kind.strip() or not isinstance(target, str) or not target:
+                raise PackageBuildError(f"asset {asset_id}.derivatives is invalid")
+            normalized[_portable_text(kind, field=f"asset {asset_id}.derivative kind", max_length=160)] = _safe_id(
+                target, field=f"asset {asset_id}.derivative target"
+            )
+        record["derivatives"] = dict(sorted(normalized.items()))
+    if "published_asset_ids" in asset:
+        published = asset["published_asset_ids"]
+        if not isinstance(published, (list, tuple)) or any(not isinstance(item, str) or not item for item in published):
+            raise PackageBuildError(f"asset {asset_id}.published_asset_ids is invalid")
+        if len(set(published)) != len(published):
+            raise PackageBuildError(f"asset {asset_id}.published_asset_ids contains duplicates")
+        record["published_asset_ids"] = sorted(
+            _safe_id(item, field=f"asset {asset_id}.published_asset_id") for item in published
+        )
+    return record
+
+
+def _validate_asset_relations(
+    assets: Mapping[str, Mapping[str, Any]], *, error_type: type[ValueError]
+) -> None:
+    """Validate explicit asset relation targets and Space ownership."""
+    for asset_id, asset in assets.items():
+        targets: list[str] = []
+        if "original_asset_id" in asset:
+            targets.append(str(asset["original_asset_id"]))
+        derivatives = asset.get("derivatives")
+        if derivatives is not None:
+            if not isinstance(derivatives, Mapping):
+                raise error_type(f"asset {asset_id}.derivatives is invalid")
+            targets.extend(str(target) for target in derivatives.values())
+        published = asset.get("published_asset_ids")
+        if published is not None:
+            if not isinstance(published, list) or any(not isinstance(target, str) for target in published):
+                raise error_type(f"asset {asset_id}.published_asset_ids is invalid")
+            targets.extend(published)
+        for target_id in targets:
+            if target_id == asset_id:
+                raise error_type(f"asset {asset_id} relation cannot target itself")
+            target = assets.get(target_id)
+            if target is None:
+                raise error_type(f"asset {asset_id} relation targets unknown Asset: {target_id}")
+            if str(target.get("space_id")) != str(asset.get("space_id")):
+                raise error_type(f"asset {asset_id} relation crosses Space boundary")
 
 
 def _collection_record(collection: Mapping[str, Any]) -> dict[str, Any]:
@@ -685,6 +742,7 @@ class KnowledgePackageBuilder:
             file_payloads[package_path] = content
         normalized_assets.sort(key=lambda item: item["id"])
         assets_by_id = {item["id"]: item for item in normalized_assets}
+        _validate_asset_relations(assets_by_id, error_type=PackageBuildError)
         for collection in normalized_collections:
             if any(assets_by_id[asset_id]["space_id"] != collection["space_id"] for asset_id in collection["asset_ids"]):
                 raise PackageBuildError(f"Collection {collection['id']} references an Asset from another Space")
@@ -1017,6 +1075,27 @@ def validate_package(package_root: Path) -> PackageValidationResult:
     asset_map = {str(item.get("id")): item for item in assets}
     if len(asset_map) != len(assets):
         raise PackageValidationError("package asset IDs are not unique")
+    for item in assets:
+        if "original_asset_id" in item:
+            _validated_id(item["original_asset_id"], field="package asset.original_asset_id")
+        if "derivatives" in item and (
+            not isinstance(item["derivatives"], dict)
+            or any(
+                not isinstance(kind, str) or not kind or not isinstance(target, str)
+                for kind, target in item["derivatives"].items()
+            )
+        ):
+            raise PackageValidationError("package asset derivatives are invalid")
+        if isinstance(item.get("derivatives"), dict):
+            for kind, target in item["derivatives"].items():
+                _validated_id(target, field=f"package asset derivative {kind}")
+        if "published_asset_ids" in item and (
+            not isinstance(item["published_asset_ids"], list)
+            or any(not isinstance(target, str) for target in item["published_asset_ids"])
+            or item["published_asset_ids"] != sorted(set(item["published_asset_ids"]))
+        ):
+            raise PackageValidationError("package asset published_asset_ids are invalid")
+    _validate_asset_relations(asset_map, error_type=PackageValidationError)
     if any(not isinstance(item, dict) for item in semantic_assets):
         raise PackageValidationError("package Semantic Asset has invalid shape")
     for item in semantic_assets:

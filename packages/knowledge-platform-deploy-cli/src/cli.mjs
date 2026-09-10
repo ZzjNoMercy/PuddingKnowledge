@@ -25,7 +25,7 @@ import {
   validateMigrationManifest,
 } from "./state.mjs";
 
-import { installRuntime, runtimeCommand } from "./runtime-install.mjs";
+import { installRuntime, runtimeCommand, packageCommand } from "./runtime-install.mjs";
 
 const { version } = createRequire(import.meta.url)("../package.json");
 const DEFAULT_HOME = path.join(os.homedir(), ".puddingknowledge");
@@ -47,7 +47,7 @@ function parseArgs(argv) {
     }
     const value = inline ?? argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PlatformCliError(`missing value for --${rawName}`, { code: "argument_error" });
-    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config"].includes(name)) {
+    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "package_ref", "output_ref", "package_id", "package_version", "collections", "idempotency_key"].includes(name)) {
       throw new PlatformCliError(`unknown option: --${rawName}`, { code: "argument_error" });
     }
     flags[name] = value;
@@ -61,6 +61,8 @@ function usage() {
     "",
     "  knowledge-platform install [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--file-config <absolute-path>] [--apply] [--json]",
+    "  knowledge-platform import --package-ref <host-binding> --idempotency-key <key> --apply [--json]",
+    "  knowledge-platform export --output-ref <host-binding> --package-id <id> --package-version <version> --collections <json> --apply [--json]",
     "  knowledge-platform stop [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform init [--home <absolute-path>] [--force] [--json]",
     "  knowledge-platform status [--home <absolute-path>] [--json]",
@@ -104,6 +106,21 @@ async function main(argv) {
     if (!(await loadConfig(home))) throw new PlatformCliError("Platform is not initialized", { code: "not_initialized" });
     if (!flags.apply) return { value: plan(command, home), code: 0 };
     return { value: command === "install" ? await installRuntime(home) : await runtimeCommand(command, home, flags), code: 0 };
+  }
+  if ((command === "import" && flags.package_ref) || (command === "export" && flags.output_ref)) {
+    if (!flags.apply) return { value: plan(command, home), code: 0 };
+    let body;
+    if (command === "import") body = { package_ref: flags.package_ref, idempotency_key: flags.idempotency_key };
+    else {
+      let collections;
+      try { collections = JSON.parse(flags.collections); }
+      catch { throw new PlatformCliError("export requires --collections JSON", { code: "argument_error" }); }
+      body = { output_ref: flags.output_ref, package_id: flags.package_id, version: flags.package_version, collections };
+      if (!body.package_id || !body.version || !Array.isArray(collections)) {
+        throw new PlatformCliError("export requires package ID, version and Collections", { code: "argument_error" });
+      }
+    }
+    return { value: await packageCommand(command, home, body), code: 0 };
   }
   if (command === "status" || command === "health") {
     const metadata = command === "status" ? await status(home) : await health(home);
