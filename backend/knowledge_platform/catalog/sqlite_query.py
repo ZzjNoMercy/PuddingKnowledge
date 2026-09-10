@@ -73,6 +73,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
                 self._collection_with_bindings(row, bindings)
                 for row in connection.execute(collection_select + " FROM knowledge_datasets ORDER BY space_id, id, version")
             ]
+            self._attach_database_source_relations(connection, collections)
             assets = [
                 self._asset(row)
                 for row in connection.execute(
@@ -81,6 +82,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
                 )
             ]
             assets = self._merge_structured_package_assets(connection, assets)
+            database_sources = self._database_package_sources(connection, collections)
             revision_after = self.catalog_revision
             if revision_before != revision_after:
                 raise OSError("Catalog changed while Package snapshot was being read")
@@ -90,7 +92,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
             # separately materialized, portable evidence index.  Until that
             # index is present in the Catalog schema, expose an empty source
             # list rather than leaking or guessing from connector fields.
-            return _SqlitePackageSnapshot(revision_before, spaces, collections, assets, semantic_assets, [], {})
+            return _SqlitePackageSnapshot(revision_before, spaces, collections, assets, semantic_assets, database_sources, {})
         finally:
             connection.close()
 
@@ -101,6 +103,78 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA query_only=ON")
         return connection
+
+    @classmethod
+    def _attach_database_source_relations(cls, connection: sqlite3.Connection, collections: list[dict[str, Any]]) -> None:
+        if not cls._has_table(connection, "knowledge_package_database_collections"):
+            return
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_package_database_collections)")}
+        required = {"space_id", "collection_id", "collection_version", "source_id"}
+        if not required.issubset(columns):
+            raise ValueError("knowledge_package_database_collections schema is incomplete")
+        by_key = {(str(item["space_id"]), str(item["id"]), str(item["version"])): item for item in collections}
+        for row in connection.execute("SELECT space_id, collection_id, collection_version, source_id FROM knowledge_package_database_collections ORDER BY source_id"):
+            key = (str(row["space_id"]), str(row["collection_id"]), str(row["collection_version"]))
+            collection = by_key.get(key)
+            if collection is None:
+                raise ValueError("database source relation references an unknown Collection")
+            collection.setdefault("database_source_ids", []).append(str(row["source_id"]))
+        for collection in collections:
+            ids = collection.get("database_source_ids", [])
+            if len(ids) != len(set(ids)):
+                raise ValueError("database source relation is duplicated")
+
+    @classmethod
+    def _database_package_sources(cls, connection: sqlite3.Connection, collections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not cls._has_table(connection, "knowledge_package_database_sources"):
+            return []
+        if not cls._has_table(connection, "knowledge_package_imports"):
+            raise ValueError("database Package source import ledger is unavailable")
+        required = {"id", "space_id", "dataset_id", "package_revision", "source_json", "content_digest"}
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_package_database_sources)")}
+        if not required.issubset(columns):
+            raise ValueError("knowledge_package_database_sources schema is incomplete")
+        selected: set[tuple[str, str]] = set()
+        selected_source_ids: set[str] = set()
+        for collection in collections:
+            explicit_source_ids = {str(value) for value in collection.get("database_source_ids", [])}
+            selected_source_ids.update(explicit_source_ids)
+            if explicit_source_ids:
+                continue
+            binding = collection.get("provider_bindings", {}).get("database_nl2sql") if isinstance(collection.get("provider_bindings"), dict) else None
+            dataset_id = binding.get("dataset_id") if isinstance(binding, dict) else collection.get("dataset_id")
+            if not dataset_id:
+                continue
+            selected.add((str(collection.get("space_id") or ""), str(dataset_id)))
+        if not selected and not selected_source_ids:
+            return []
+        available_rows = connection.execute("SELECT id, space_id, dataset_id, package_revision FROM knowledge_package_database_sources").fetchall()
+        complete_revisions = {str(row[0]) for row in connection.execute("SELECT package_revision FROM knowledge_package_imports WHERE status='complete'")}
+        for row in available_rows:
+            key = (str(row["space_id"] or ""), str(row["dataset_id"] or ""))
+            if (str(row["id"]) in selected_source_ids or key in selected) and str(row["package_revision"]) not in complete_revisions:
+                raise ValueError(f"database Package source import is incomplete: {row['id']}")
+        result: list[dict[str, Any]] = []
+        for row in connection.execute("SELECT s.id, s.space_id, s.dataset_id, s.package_revision, s.source_json, s.content_digest FROM knowledge_package_database_sources s JOIN knowledge_package_imports i ON i.package_revision=s.package_revision AND i.status='complete' ORDER BY s.id"):
+            key = (str(row["space_id"] or ""), str(row["dataset_id"] or ""))
+            if str(row["id"]) not in selected_source_ids and key not in selected:
+                continue
+            try:
+                source = json.loads(row["source_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValueError(f"database Package source JSON is invalid: {row['id']}") from error
+            if not isinstance(source, dict) or set(source) - {"id", "space_id", "dataset_id", "dialect", "ddl", "documentation", "sql_examples", "entities"}:
+                raise ValueError(f"database Package source is not portable: {row['id']}")
+            if (str(source.get("id")), str(source.get("space_id")), str(source.get("dataset_id"))) != (str(row["id"]), key[0], key[1]):
+                raise ValueError(f"database Package source identity mismatch: {row['id']}")
+            encoded = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if str(row["content_digest"]) != "sha256:" + hashlib.sha256(encoded).hexdigest():
+                raise ValueError(f"database Package source digest mismatch: {row['id']}")
+            revision = str(row["package_revision"] or "")
+            if len(revision) != 71 or not revision.startswith("sha256:") or any(char not in "0123456789abcdef" for char in revision[7:]):
+                raise ValueError(f"database Package source revision is invalid: {row['id']}")
+            result.append(source)
+        return result
 
     @classmethod
     def _merge_structured_package_assets(

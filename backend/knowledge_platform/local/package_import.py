@@ -16,13 +16,14 @@ import shutil
 import sqlite3
 import stat
 import tempfile
+from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 from knowledge_contracts import BlobReadRequest, BlobReadResult, CitationCandidate, Principal
-from knowledge_platform.package.builder import import_package_zip
+from knowledge_platform.package.builder import _database_source_record, import_package_zip
 from knowledge_platform.retrieval.ports import RetrievalProviderError
 from knowledge_platform.retrieval.ports import RetrievalIndexNotReady
 from knowledge_platform.retrieval.local import _open_regular_file
@@ -33,7 +34,7 @@ from .objects import LocalObjectStore
 
 
 _ADMIN = {"knowledge.admin", "knowledge:admin"}
-_SUPPORTED = {"knowledge_list", "knowledge_search", "knowledge_read", "knowledge_query", "wiki_query", "document_rag_query", "table_query"}
+_SUPPORTED = {"knowledge_list", "knowledge_search", "knowledge_read", "knowledge_query", "wiki_query", "document_rag_query", "table_query", "database_nl2sql", "database_schema", "database_execute_readonly"}
 _TEXT_MIMES = {"text/plain", "text/markdown", "text/html", "application/json", "application/xml"}
 
 
@@ -120,6 +121,12 @@ class LocalPackagePublisher:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    def _connect_readonly(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(f"file:{quote(str(self.catalog), safe='/')}?mode=ro", uri=True, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+
     def _ensure_schema(self) -> None:
         # The semantic repository owns the canonical table and its shape.
         SqliteSemanticMarkdownRepository(self.catalog)
@@ -143,6 +150,19 @@ class LocalPackagePublisher:
                     asset_id TEXT NOT NULL, package_revision TEXT NOT NULL, ordinal INTEGER NOT NULL,
                     text TEXT NOT NULL, content_digest TEXT NOT NULL,
                     PRIMARY KEY(asset_id, ordinal)
+                );
+                CREATE TABLE IF NOT EXISTS knowledge_package_database_sources (
+                    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, dataset_id TEXT NOT NULL,
+                    package_revision TEXT NOT NULL, source_json TEXT NOT NULL, content_digest TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS knowledge_package_database_collections (
+                    space_id TEXT NOT NULL, collection_id TEXT NOT NULL, collection_version TEXT NOT NULL,
+                    source_id TEXT NOT NULL, PRIMARY KEY(space_id,collection_id,collection_version,source_id)
+                );
+                CREATE TABLE IF NOT EXISTS knowledge_package_database_collection_facts (
+                    space_id TEXT NOT NULL, collection_id TEXT NOT NULL, collection_version TEXT NOT NULL,
+                    package_revision TEXT NOT NULL, collection_json TEXT NOT NULL, content_digest TEXT NOT NULL,
+                    PRIMARY KEY(space_id,collection_id,collection_version,package_revision)
                 );
                 """
             )
@@ -234,8 +254,9 @@ class LocalPackagePublisher:
             collections = collections_doc.get("collections", [])
             assets = assets_doc.get("assets", [])
             semantics = semantic_doc.get("assets", [])
-            if database_doc.get("sources"):
-                raise ValueError("live database package capabilities are unsupported")
+            database_sources = database_doc.get("sources", [])
+            if not isinstance(database_sources, list):
+                raise ValueError("package database sources are invalid")
             space_ids = {str(item["id"]) for item in spaces}
             if not _authorized(principal, space_ids):
                 raise PermissionError("Package import requires admin and every package Space scope")
@@ -246,6 +267,31 @@ class LocalPackagePublisher:
             if unsupported:
                 raise ValueError(f"unsupported package capabilities: {sorted(unsupported)}")
             capabilities = tuple(sorted(declared_capabilities))
+            source_ids = {str(source["id"]) for source in database_sources}
+            source_spaces = {str(source["id"]): str(source["space_id"]) for source in database_sources}
+            dataset_keys: set[tuple[str, str]] = set()
+            for source in database_sources:
+                key = (str(source["space_id"]), str(source["dataset_id"]))
+                if key in dataset_keys:
+                    raise ValueError(f"database source dataset identity conflict: {source['dataset_id']}")
+                dataset_keys.add(key)
+            database_collection_relations: list[tuple[str, str, str, str]] = []
+            for collection in collections:
+                collection_caps = {str(x) for x in collection.get("capabilities", [])}
+                db_caps = collection_caps & {"database_nl2sql", "database_schema", "database_execute_readonly"}
+                declared = collection.get("database_source_ids", [])
+                if db_caps and (not isinstance(declared, list) or not declared):
+                    raise ValueError(f"database Collection requires database_source_ids: {collection['id']}")
+                if not db_caps and declared:
+                    raise ValueError(f"non-database Collection has database_source_ids: {collection['id']}")
+                if len(set(str(x) for x in declared)) != len(declared) or any(str(x) not in source_ids for x in declared):
+                    raise ValueError(f"database Collection source relation is invalid: {collection['id']}")
+                if any(source_spaces[str(x)] != str(collection["space_id"]) for x in declared):
+                    raise ValueError(f"database Collection source Space mismatch: {collection['id']}")
+                database_collection_relations.extend((str(collection["space_id"]), str(collection["id"]), str(collection["version"]), str(x)) for x in declared)
+            database_payloads = {
+                str(source["id"]): _json(source).encode("utf-8") for source in database_sources
+            }
             connection = self._connect()
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -253,10 +299,10 @@ class LocalPackagePublisher:
                 if prior is not None:
                     if prior["status"] != "complete":
                         raise ValueError("package revision has incomplete publication")
-                    self._assert_complete(connection, assets, collections, semantics, package_revision)
+                    self._assert_complete(connection, assets, collections, semantics, database_sources, package_revision)
                     connection.commit()
                     return PackageImportResult(package_revision, package_id, version, tuple(sorted(space_ids)), tuple(sorted(str(a["id"]) for a in assets)), tuple(sorted(str(c["id"]) for c in collections)), True, capabilities).as_dict()
-                self._check_conflicts(connection, assets, collections, semantics, package_revision)
+                self._check_conflicts(connection, assets, collections, semantics, database_sources, package_revision)
                 identity = connection.execute("SELECT package_revision FROM knowledge_package_imports WHERE package_id=? AND version=?", (package_id, version)).fetchone()
                 if identity is not None and identity[0] != package_revision:
                     raise ValueError('Package id/version already has different content')
@@ -312,6 +358,9 @@ class LocalPackagePublisher:
                         raise ValueError(f"unsupported Collection capabilities: {sorted(collection_capabilities - _SUPPORTED)}")
                     supported = sorted(collection_capabilities)
                     connection.execute("INSERT INTO knowledge_datasets(id,space_id,name,version,kind,description,asset_ids,semantic_asset_ids,capabilities,freshness,permissions_json,manifest_digest,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cid, sid, collection["name"], cv, collection["kind"], "", _json(collection.get("asset_ids", [])), _json(collection.get("semantic_asset_ids", [])), _json(supported), _json(collection.get("freshness", {})), "{}", package_revision, now, now))
+                    if collection_capabilities & {"database_nl2sql", "database_schema", "database_execute_readonly"}:
+                        payload = _json(collection).encode("utf-8")
+                        connection.execute("INSERT INTO knowledge_package_database_collection_facts VALUES(?,?,?,?,?,?)", (sid, cid, cv, package_revision, payload.decode("utf-8"), "sha256:" + hashlib.sha256(payload).hexdigest()))
                     for capability in supported:
                         if capability in {"wiki_query", "document_rag_query"}:
                             binding = {"provider_id": "knowledge_package"}
@@ -323,6 +372,15 @@ class LocalPackagePublisher:
                         else:
                             continue
                         connection.execute("INSERT INTO knowledge_collection_bindings VALUES(?,?,?,?,?,?,?)", (sid, cid, cv, capability, _json(binding), now, now))
+                for source in database_sources:
+                    source_id = str(source["id"])
+                    payload = database_payloads[source_id]
+                    connection.execute(
+                        "INSERT INTO knowledge_package_database_sources(id,space_id,dataset_id,package_revision,source_json,content_digest) VALUES(?,?,?,?,?,?)",
+                        (source_id, source["space_id"], source["dataset_id"], package_revision, payload.decode("utf-8"), "sha256:" + hashlib.sha256(payload).hexdigest()),
+                    )
+                for relation in database_collection_relations:
+                    connection.execute("INSERT INTO knowledge_package_database_collections VALUES(?,?,?,?)", relation)
                 for semantic in semantics:
                     body = self._objects.read(semantic_objects[str(semantic["id"])])
                     prefix, _, markdown = body.decode("utf-8").partition("\n---\n\n")
@@ -350,7 +408,7 @@ class LocalPackagePublisher:
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
 
-    def _check_conflicts(self, connection: sqlite3.Connection, assets: list[Mapping[str, Any]], collections: list[Mapping[str, Any]], semantics: list[Mapping[str, Any]], revision: str) -> None:
+    def _check_conflicts(self, connection: sqlite3.Connection, assets: list[Mapping[str, Any]], collections: list[Mapping[str, Any]], semantics: list[Mapping[str, Any]], database_sources: list[Mapping[str, Any]], revision: str) -> None:
         for asset in assets:
             row = connection.execute("SELECT space_id,source_type,content_digest,metadata_json FROM knowledge_assets WHERE id=?", (asset["id"],)).fetchone()
             if row is not None and (row["source_type"] != "package" or row["content_digest"] != asset["content_digest"] or json.loads(row["metadata_json"]).get("package_revision") != revision):
@@ -367,8 +425,20 @@ class LocalPackagePublisher:
             row = connection.execute("SELECT package_revision,metadata_json FROM knowledge_package_semantic_assets WHERE id=? AND space_id=?", (semantic["id"], semantic["space_id"])).fetchone()
             if row is not None and row[0] != revision:
                 raise ValueError(f"Semantic identity conflict: {semantic['id']}")
+        for source in database_sources:
+            row = connection.execute("SELECT space_id,dataset_id,package_revision,source_json,content_digest FROM knowledge_package_database_sources WHERE id=?", (source["id"],)).fetchone()
+            payload = _json(source).encode("utf-8")
+            digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+            if row is not None and (row["space_id"] != source["space_id"] or row["dataset_id"] != source["dataset_id"] or row["package_revision"] != revision or row["source_json"] != payload.decode() or row["content_digest"] != digest):
+                raise ValueError(f"Database source identity conflict: {source['id']}")
+        for collection in collections:
+            declared = collection.get("database_source_ids", [])
+            rows = connection.execute("SELECT source_id FROM knowledge_package_database_collections WHERE space_id=? AND collection_id=? AND collection_version=? ORDER BY source_id", (collection["space_id"], collection["id"], collection["version"])).fetchall()
+            existing = connection.execute("SELECT 1 FROM knowledge_datasets WHERE id=? AND space_id=? AND version=?", (collection["id"], collection["space_id"], collection["version"])).fetchone()
+            if existing is not None and [str(r[0]) for r in rows] != sorted(str(x) for x in declared):
+                raise ValueError(f"Database Collection identity conflict: {collection['id']}")
 
-    def _assert_complete(self, connection: sqlite3.Connection, assets: list[Mapping[str, Any]], collections: list[Mapping[str, Any]], semantics: list[Mapping[str, Any]], revision: str) -> None:
+    def _assert_complete(self, connection: sqlite3.Connection, assets: list[Mapping[str, Any]], collections: list[Mapping[str, Any]], semantics: list[Mapping[str, Any]], database_sources: list[Mapping[str, Any]], revision: str) -> None:
         for asset in assets:
             row = connection.execute("SELECT * FROM knowledge_assets WHERE id=?", (asset["id"],)).fetchone()
             if row is None or json.loads(row['metadata_json']).get("package_revision") != revision:
@@ -455,6 +525,86 @@ class LocalPackagePublisher:
             if (current.status != 'active' or current.definition.definition_digest != expected.definition_digest
                     or current.definition_digest != expected.definition_digest):
                 raise ValueError('package semantic publication changed')
+        for source in database_sources:
+            row = connection.execute("SELECT space_id,dataset_id,package_revision,source_json,content_digest FROM knowledge_package_database_sources WHERE id=?", (source["id"],)).fetchone()
+            payload = _json(source).encode("utf-8")
+            digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+            if row is None or row["space_id"] != source["space_id"] or row["dataset_id"] != source["dataset_id"] or row["package_revision"] != revision or row["source_json"] != payload.decode("utf-8") or row["content_digest"] != digest:
+                raise ValueError("package database source publication is incomplete")
+        for collection in collections:
+            declared = collection.get("database_source_ids", [])
+            rows = connection.execute("SELECT source_id FROM knowledge_package_database_collections WHERE space_id=? AND collection_id=? AND collection_version=? ORDER BY source_id", (collection["space_id"], collection["id"], collection["version"])).fetchall()
+            if [str(r[0]) for r in rows] != sorted(str(x) for x in declared):
+                raise ValueError("package database Collection relation is incomplete")
+            if set(collection.get("capabilities", [])) & {"database_nl2sql", "database_schema", "database_execute_readonly"}:
+                fact = connection.execute("SELECT collection_json,content_digest FROM knowledge_package_database_collection_facts WHERE space_id=? AND collection_id=? AND collection_version=? AND package_revision=?", (collection["space_id"], collection["id"], collection["version"], revision)).fetchone()
+                payload = _json(collection).encode("utf-8")
+                if fact is None or fact["collection_json"] != payload.decode("utf-8") or fact["content_digest"] != "sha256:" + hashlib.sha256(payload).hexdigest():
+                    raise ValueError("package database Collection facts are incomplete")
+
+    def read_database_collection(self, space_id: str, collection_id: str, collection_version: str, expected_package_revision: str | None = None) -> dict[str, Any]:
+        if not all(isinstance(value, str) and value for value in (space_id, collection_id, collection_version)):
+            raise ValueError("database Collection identity is invalid")
+        with self._connect_readonly() as db:
+            db.execute("BEGIN")
+            facts = db.execute("SELECT package_revision,collection_json,content_digest FROM knowledge_package_database_collection_facts WHERE space_id=? AND collection_id=? AND collection_version=?", (space_id, collection_id, collection_version)).fetchall()
+            if expected_package_revision is not None:
+                facts = [item for item in facts if item["package_revision"] == expected_package_revision]
+            if len(facts) != 1:
+                raise LookupError("package database Collection does not exist")
+            fact = facts[0]
+            revision = fact["package_revision"]
+            if expected_package_revision is not None and revision != expected_package_revision:
+                raise ValueError("package database Collection revision mismatch")
+            status = db.execute("SELECT status FROM knowledge_package_imports WHERE package_revision=?", (revision,)).fetchone()
+            if status is None or status[0] != "complete":
+                raise ValueError("package database Collection is not complete")
+            payload = fact["collection_json"].encode("utf-8")
+            if "sha256:" + hashlib.sha256(payload).hexdigest() != fact["content_digest"]:
+                raise ValueError("package database Collection integrity mismatch")
+            value = json.loads(fact["collection_json"])
+            if (value.get("id") != collection_id or value.get("space_id") != space_id
+                    or value.get("version") != collection_version):
+                raise ValueError("package database Collection identity mismatch")
+            dataset = db.execute("SELECT name,kind,asset_ids,semantic_asset_ids,capabilities,manifest_digest FROM knowledge_datasets WHERE id=? AND space_id=? AND version=?", (collection_id, space_id, collection_version)).fetchone()
+            if dataset is None or dataset["manifest_digest"] != revision:
+                raise ValueError("package database Collection facts mismatch")
+            expected = (value.get("name"), value.get("kind"), value.get("asset_ids", []), value.get("semantic_asset_ids", []), sorted(value.get("capabilities", [])))
+            actual = (dataset["name"], dataset["kind"], json.loads(dataset["asset_ids"]), json.loads(dataset["semantic_asset_ids"]), sorted(json.loads(dataset["capabilities"])))
+            if expected != actual:
+                raise ValueError("package database Collection facts mismatch")
+            relations = [str(row[0]) for row in db.execute("SELECT source_id FROM knowledge_package_database_collections WHERE space_id=? AND collection_id=? AND collection_version=? ORDER BY source_id", (space_id, collection_id, collection_version)).fetchall()]
+            if relations != sorted(str(item) for item in value.get("database_source_ids", [])):
+                raise ValueError("package database Collection relations mismatch")
+            return value
+
+    def read_database_source(self, source_id: str, expected_package_revision: str | None = None) -> dict[str, Any]:
+        """Read one complete portable database source without opening a DB connection."""
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError("source_id is invalid")
+        with self._connect_readonly() as db:
+            db.execute("BEGIN")
+            row = db.execute("SELECT space_id,dataset_id,package_revision,source_json,content_digest FROM knowledge_package_database_sources WHERE id=?", (source_id,)).fetchone()
+            if row is None:
+                raise LookupError("package database source does not exist")
+            if expected_package_revision is not None and row["package_revision"] != expected_package_revision:
+                raise ValueError("package database source revision mismatch")
+            status = db.execute("SELECT status FROM knowledge_package_imports WHERE package_revision=?", (row["package_revision"],)).fetchone()
+            if status is None or status[0] != "complete":
+                raise ValueError("package database source is not complete")
+            payload = row["source_json"].encode("utf-8")
+            if "sha256:" + hashlib.sha256(payload).hexdigest() != row["content_digest"]:
+                raise ValueError("package database source integrity mismatch")
+            value = json.loads(row["source_json"])
+            if not isinstance(value, dict) or value.get("id") != source_id or value.get("space_id") != row["space_id"] or value.get("dataset_id") != row["dataset_id"]:
+                raise ValueError("package database source identity mismatch")
+            try:
+                canonical = _database_source_record(value, space_ids={str(row["space_id"])})
+            except Exception as error:
+                raise ValueError("package database source canonical shape is invalid") from error
+            if canonical != value:
+                raise ValueError("package database source is not canonical")
+            return value
 
     def derivative_targets(self, asset_id: str) -> dict:
         with self._connect() as db:

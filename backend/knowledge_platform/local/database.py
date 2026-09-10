@@ -62,10 +62,12 @@ class DatabaseConfig:
     collection_id: str
     source: LocalPostgresDatabaseSource
     password_env: str | None
-    collection_root: Path
+    collection_root: Path | None
     collection_name: str
     package_revision: str
     input_digest: str
+    package_source_id: str | None = None
+    collection_version: str | None = None
 
 
 def load_database_config(path: Path) -> DatabaseConfig:
@@ -76,20 +78,23 @@ def load_database_config(path: Path) -> DatabaseConfig:
         raw = stream.read(65537)
     if len(raw) > 65536:
         raise ValueError("database configuration exceeds size limit")
-    value = _object(json.loads(raw, object_pairs_hook=_unique_object),
-                    {"format", "collection_id", "source", "vanna"})
-    if value["format"] != "knowledge-local-database/v1":
+    value = json.loads(raw, object_pairs_hook=_unique_object)
+    value = _object(value, {"format", "collection_id", "source", "vanna"}
+        | ({"collection_version"} if isinstance(value, dict) and value.get("format") == "knowledge-local-database/v2" else set()))
+    if value["format"] not in {"knowledge-local-database/v1", "knowledge-local-database/v2"}:
         raise ValueError("database configuration format is unsupported")
     source = _object(value["source"], {"dataset_id", "host", "port", "database", "username", "allowed_tables", "password_env"})
-    vanna = _object(value["vanna"], {"root", "collection_name", "package_revision", "input_digest"})
+    packaged = value["format"] == "knowledge-local-database/v2"
+    vanna = _object(value["vanna"], ({"package_source_id", "package_revision", "input_digest"} if packaged
+        else {"root", "collection_name", "package_revision", "input_digest"}))
     tables = source["allowed_tables"]
     if not isinstance(tables, list) or not 1 <= len(tables) <= 100 or any(not isinstance(t, str) for t in tables):
         raise ValueError("database table allowlist is invalid")
     password_env = source["password_env"]
     if password_env is not None:
         _text(password_env, _ENV)
-    root = vanna["root"]
-    if not isinstance(root, str) or not Path(root).is_absolute():
+    root = vanna.get("root")
+    if not packaged and (not isinstance(root, str) or not Path(root).is_absolute()):
         raise ValueError("Vanna root must be an explicit absolute path")
     input_digest = _text(vanna["input_digest"], _DIGEST)
     return DatabaseConfig(
@@ -101,19 +106,44 @@ def load_database_config(path: Path) -> DatabaseConfig:
             dataset_version="local-postgres-v1", deployment_revision="local-unactivated-v1",
             semantic_context_hash=input_digest,
         ),
-        password_env=password_env, collection_root=Path(root),
-        collection_name=_text(vanna["collection_name"]),
+        password_env=password_env, collection_root=Path(root) if root is not None else None,
+        collection_name=_text(vanna["collection_name"]) if not packaged else "package_evidence",
+        package_source_id=_text(vanna["package_source_id"]) if packaged else None,
+        collection_version=_text(value["collection_version"]) if packaged else None,
         package_revision=_text(vanna["package_revision"], _DIGEST), input_digest=input_digest,
     )
 
 
-def build_database_services(config: DatabaseConfig, catalog_path: Path) -> dict[str, Any]:
+def build_database_services(config: DatabaseConfig, catalog_path: Path, *, publisher=None) -> dict[str, Any]:
     from dataclasses import replace
 
-    gateway = LocalVannaCollectionGateway(
-        config.collection_root, expected_collection_name=config.collection_name,
-        expected_package_revision=config.package_revision, expected_input_digest=config.input_digest,
-    )
+    if config.package_source_id is not None:
+        repository = SqliteCatalogQueryRepository(catalog_path)
+        collection = next((c for c in repository.list_collections(space_id=config.source.space_id)
+                           if c.get("id") == config.collection_id
+                           and (config.collection_version is None or c.get("version") == config.collection_version)), None)
+        if publisher is None or collection is None:
+            raise ValueError("Package database binding requires a published Collection")
+        from knowledge_platform.local.package_database import PublishedDatabaseGateway
+        gateway = PublishedDatabaseGateway(publisher, source_id=config.package_source_id,
+            package_revision=config.package_revision, input_digest=config.input_digest,
+            dataset_id=config.source.dataset_id, space_id=config.source.space_id,
+            collection_id=config.collection_id, collection_version=collection['version'])
+    else:
+        gateway = LocalVannaCollectionGateway(
+            config.collection_root, expected_collection_name=config.collection_name,
+            expected_package_revision=config.package_revision, expected_input_digest=config.input_digest,
+        )
+    try:
+        return _bind_database_services(config, catalog_path, gateway)
+    except BaseException:
+        if config.package_source_id is not None:
+            gateway.close()
+        raise
+
+
+def _bind_database_services(config, catalog_path, gateway):
+    from dataclasses import replace
     password = ""
     if config.password_env is not None:
         if config.password_env not in os.environ:
@@ -122,10 +152,14 @@ def build_database_services(config: DatabaseConfig, catalog_path: Path) -> dict[
     source = replace(config.source, password=password)
     repository = SqliteCatalogQueryRepository(catalog_path)
     collection = next((c for c in repository.list_collections(space_id=source.space_id)
-                       if c.get("id") == config.collection_id), None)
+                       if c.get("id") == config.collection_id
+                           and (config.collection_version is None or c.get("version") == config.collection_version)), None)
     if collection is None:
         raise ValueError("configured database Collection does not exist")
     datasets = LocalPostgresDatabaseDatasetResolver([source])
+    if config.package_source_id is not None:
+        from knowledge_platform.local.package_database import PublishedDatabaseResolver
+        datasets = PublishedDatabaseResolver(datasets, gateway)
     principal = Principal(subject_id="knowledge-local-binding", scopes=("knowledge.processing", f"knowledge.space:{source.space_id}"))
     bound = DatabaseCollectionBindingService(datasets=datasets, writer=SqliteStructuredAssetWriter(catalog_path)).bind(
         principal=principal, correlation=Correlation("knowledge-local-database-binding"),
@@ -142,6 +176,7 @@ def build_database_services(config: DatabaseConfig, catalog_path: Path) -> dict[
     validator = PostgresReadonlySqlValidator()
     key = (source.space_id, source.dataset_id)
     return {
+        **({"_database_close": gateway.close} if config.package_source_id is not None else {}),
         "database_nl2sql": DatabaseNl2SqlService(datasets=datasets, provider=GatewayVannaProvider(gateway, version="local-vanna-examples-v1"), validator=validator, plans=plans),
         "database_execute": DatabaseExecuteReadonlyService(datasets=datasets, plans=plans, validator=validator,
             executor=PostgresReadonlyDatabaseExecutor({key: source}, validator=validator, source_revisions={key: binding.source_revision})),

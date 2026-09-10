@@ -247,8 +247,33 @@ class PackageExportService:
                 if base:
                     ids.extend(sorted(self._catalog_relations({base_id}, assets_by_id) - {base_id}))
             collections_payload.append(dict(item, asset_ids=list(dict.fromkeys(ids))))
-        if any(str(item.get("kind", "")).casefold() in {"database", "live_database"} and not snapshot.database_sources for item in collections_payload):
-            raise PackageExportError("live database export requires portable evidence and is unavailable")
+        selected_dataset_keys: set[tuple[str, str]] = set()
+        selected_source_ids: set[str] = set()
+        for item in collections_payload:
+            explicit_source_ids = {str(value) for value in item.get("database_source_ids", [])}
+            selected_source_ids.update(explicit_source_ids)
+            if explicit_source_ids:
+                continue
+            binding = item.get("provider_bindings", {}).get("database_nl2sql") if isinstance(item.get("provider_bindings"), dict) else None
+            dataset_id = binding.get("dataset_id") if isinstance(binding, dict) else item.get("dataset_id")
+            if dataset_id:
+                selected_dataset_keys.add((str(item.get("space_id")), str(dataset_id)))
+        database_sources = [source for source in snapshot.database_sources if str(source.get("id")) in selected_source_ids or (str(source.get("space_id")), str(source.get("dataset_id"))) in selected_dataset_keys]
+        source_ids = {str(source.get("id")): source for source in database_sources}
+        for collection in collections_payload:
+            explicit_ids = [str(value) for value in collection.get("database_source_ids", [])]
+            if explicit_ids:
+                matching_ids = [source_id for source_id in explicit_ids if source_id in source_ids]
+                if set(matching_ids) != set(explicit_ids):
+                    raise PackageExportError('database Collection references missing portable evidence')
+            else:
+                binding = collection.get("provider_bindings", {}).get("database_nl2sql") if isinstance(collection.get("provider_bindings"), dict) else None
+                dataset_id = binding.get("dataset_id") if isinstance(binding, dict) else collection.get("dataset_id")
+                matching_ids = [source_id for source_id, source in source_ids.items() if str(source.get("space_id")) == str(collection.get("space_id")) and str(source.get("dataset_id")) == str(dataset_id)] if dataset_id else []
+            if str(collection.get("kind", "")).casefold() in {"database", "live_database"} or {"database_nl2sql", "database_schema", "database_execute_readonly"} & {str(value) for value in collection.get("capabilities", [])}:
+                if not matching_ids:
+                    raise PackageExportError(f"database Collection has no matching portable evidence source: {collection.get('id')}")
+            collection["database_source_ids"] = sorted(set(matching_ids))
         catalog_revision = str(snapshot.catalog_revision)
         output_zip.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".knowledge-package-export-", dir=str(output_zip.parent)) as staging:
@@ -271,7 +296,7 @@ class PackageExportService:
             package_root = Path(staging) / "package"
             published = False
             try:
-                result = self.builder.build(output_dir=package_root, package_id=package_id, version=version, spaces=spaces, collections=collections_payload, assets=assets, asset_files=asset_files, capabilities=sorted({str(cap) for item in collections_payload for cap in item.get("capabilities", ())}), catalog_revision=catalog_revision, semantic_assets=semantic_assets, database_sources=list(snapshot.database_sources), provider_versions=snapshot.provider_versions)
+                result = self.builder.build(output_dir=package_root, package_id=package_id, version=version, spaces=spaces, collections=collections_payload, assets=assets, asset_files=asset_files, capabilities=sorted({str(cap) for item in collections_payload for cap in item.get("capabilities", ())}), catalog_revision=catalog_revision, semantic_assets=semantic_assets, database_sources=database_sources, provider_versions=snapshot.provider_versions)
                 if str(self.repository.catalog_revision) != catalog_revision:
                     raise PackageExportError("Catalog changed after asset reads")
                 staged_zip = Path(staging) / "package.zip"

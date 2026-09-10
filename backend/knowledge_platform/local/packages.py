@@ -86,14 +86,20 @@ class BoundPackageImport:
         if binding is None:
             return error(QueryErrorCode.NOT_FOUND, "Package binding is unavailable")
         key = hashlib.sha256(json.dumps([principal.subject_id, request.idempotency_key]).encode()).hexdigest()
-        fingerprint = hashlib.sha256(json.dumps([binding, sorted(principal.scopes), self.config["space_ids"]], sort_keys=True).encode()).hexdigest()
+        # Unrelated runtime capabilities (for example enabling Database) do not
+        # change this Package request. Authorization is checked afresh above.
+        package_scopes = sorted(scope for scope in package_principal(principal, self.config).scopes
+            if scope in {'knowledge.admin', 'knowledge:admin'}
+            or scope.startswith(('knowledge.space:', 'knowledge:space:')))
+        fingerprint = hashlib.sha256(json.dumps([binding, package_scopes, self.config["space_ids"]], sort_keys=True).encode()).hexdigest()
+        legacy_fingerprint = hashlib.sha256(json.dumps([binding, sorted(principal.scopes), self.config["space_ids"]], sort_keys=True).encode()).hexdigest()
         try:
             with self.publisher._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 prior = db.execute("SELECT fingerprint FROM knowledge_package_requests WHERE request_key=?", (key,)).fetchone()
-                if prior is not None and prior[0] != fingerprint:
+                if prior is not None and prior[0] not in {fingerprint, legacy_fingerprint}:
                     return error(QueryErrorCode.INVALID_REQUEST, "Package request identity changed")
-                db.execute("INSERT OR IGNORE INTO knowledge_package_requests VALUES (?,?)", (key, fingerprint))
+                db.execute("INSERT INTO knowledge_package_requests VALUES (?,?) ON CONFLICT(request_key) DO UPDATE SET fingerprint=excluded.fingerprint", (key, fingerprint))
             result = await self.publisher.import_package(principal=package_principal(principal, self.config), package_zip=Path(binding["path"]),
                                                         expected_digest=binding["digest"])
             return QueryResult(status="ok", trace_id=correlation.trace_id, data=result)

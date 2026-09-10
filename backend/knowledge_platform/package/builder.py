@@ -459,6 +459,11 @@ def _collection_record(collection: Mapping[str, Any]) -> dict[str, Any]:
         raise PackageBuildError(f"collection {collection_id} has invalid asset_ids")
     if len(asset_ids) != len(set(asset_ids)):
         raise PackageBuildError(f"collection {collection_id} has duplicate asset_ids")
+    database_source_ids = collection.get("database_source_ids", [])
+    if not isinstance(database_source_ids, (list, tuple)) or any(not isinstance(item, str) or not item for item in database_source_ids):
+        raise PackageBuildError(f"collection {collection_id} has invalid database_source_ids")
+    if len(database_source_ids) != len(set(database_source_ids)):
+        raise PackageBuildError(f"collection {collection_id} has duplicate database_source_ids")
     semantic_asset_ids = collection.get("semantic_asset_ids", [])
     if not isinstance(semantic_asset_ids, (list, tuple)) or any(
         not isinstance(item, str) or not item for item in semantic_asset_ids
@@ -479,6 +484,7 @@ def _collection_record(collection: Mapping[str, Any]) -> dict[str, Any]:
         "version": _portable_text(collection.get("version"), field=f"collection {collection_id}.version"),
         "kind": _portable_text(collection.get("kind"), field=f"collection {collection_id}.kind"),
         "asset_ids": sorted(asset_ids),
+        "database_source_ids": sorted(database_source_ids),
         "semantic_asset_ids": sorted(semantic_asset_ids),
         "capabilities": sorted(set(capabilities)),
         "freshness": _portable_value(freshness, field=f"collection {collection_id}.freshness"),
@@ -668,6 +674,14 @@ class KnowledgePackageBuilder:
             raise PackageBuildError("database source IDs must be unique")
         normalized_database_sources.sort(key=lambda item: item["id"])
         normalized_collections = [_collection_record(item) for item in collections]
+        source_by_id = {item["id"]: item for item in normalized_database_sources}
+        for collection in normalized_collections:
+            for source_id in collection["database_source_ids"]:
+                source = source_by_id.get(source_id)
+                if source is None:
+                    raise PackageBuildError(f"Collection {collection['id']} references an unknown database source")
+                if source["space_id"] != collection["space_id"]:
+                    raise PackageBuildError(f"Collection {collection['id']} references a database source from another Space")
         collection_keys = {(item["id"], item["version"]) for item in normalized_collections}
         if len(collection_keys) != len(normalized_collections):
             raise PackageBuildError("Collection id/version pairs must be unique")
@@ -1225,6 +1239,16 @@ def validate_package(package_root: Path) -> PackageValidationResult:
             raise PackageValidationError(
                 f"package Collection references an unknown or duplicate Semantic Asset: {collection.get('id')}"
             )
+        database_ids = collection.get("database_source_ids", [])
+        if database_ids is not None:
+            if not isinstance(database_ids, list) or any(not isinstance(source_id, str) for source_id in database_ids) or len(database_ids) != len(set(database_ids)):
+                raise PackageValidationError(f"package Collection has invalid database_source_ids: {collection.get('id')}")
+            for source_id in database_ids:
+                source = next((item for item in database_sources if item.get("id") == source_id), None)
+                if source is None:
+                    raise PackageValidationError(f"package Collection references an unknown database source: {collection.get('id')}")
+                if source.get("space_id") != collection.get("space_id"):
+                    raise PackageValidationError(f"package Collection crosses database source Space boundary: {collection.get('id')}")
     referenced_semantic_ids = {
         semantic_id for collection in collections for semantic_id in collection.get("semantic_asset_ids", [])
     }

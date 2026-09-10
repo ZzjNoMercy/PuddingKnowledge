@@ -159,12 +159,18 @@ def main() -> int:
         else:
             catalog = owned["catalog"]
             materialized = owned
+        packages = None
+        if package_config is not None:
+            from knowledge_platform.local.package_import import LocalPackagePublisher
+            packages = LocalPackagePublisher(catalog, args.state_dir / "processing")
         database_services = {}
+        database_close = None
         database_scopes = ()
         if database_config:
             from knowledge_platform.local.database import DATABASE_SCOPES, build_database_services
             try:
-                database_services = build_database_services(database_config, catalog)
+                database_services = build_database_services(database_config, catalog, publisher=packages)
+                database_close = database_services.pop("_database_close", None)
             except Exception:
                 parser.exit(2, "Local database binding failed; check configuration, optional dependencies and source availability\n")
             database_scopes = DATABASE_SCOPES
@@ -177,10 +183,6 @@ def main() -> int:
             except Exception:
                 parser.exit(2, "Local structured binding failed; check approved Assets and source digests\n")
             structured_scopes = STRUCTURED_SCOPES
-        packages = None
-        if package_config is not None:
-            from knowledge_platform.local.package_import import LocalPackagePublisher
-            packages = LocalPackagePublisher(catalog, args.state_dir / "processing")
         files = None
         if file_config is not None:
             from knowledge_platform.local.files import LocalFileService
@@ -257,6 +259,8 @@ def main() -> int:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])
         finally:
             ready.unlink(missing_ok=True)
+            if database_close is not None:
+                database_close()
             if packages is not None:
                 packages.close()
     return 0

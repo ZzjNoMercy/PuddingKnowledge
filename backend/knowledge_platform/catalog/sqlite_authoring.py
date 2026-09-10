@@ -450,7 +450,7 @@ class SqliteStructuredAssetWriter:
                 raise ValueError("Collection metadata is invalid")
             if capability not in capabilities:
                 capabilities.append(capability)
-            if "provider_id" not in binding and identity not in asset_ids:
+            if "asset_id" in binding and identity not in asset_ids:
                 asset_ids.append(identity)
             if capability == "table_query" and "asset_id" in binding:
                 source = connection.execute(
