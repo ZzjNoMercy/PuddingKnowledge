@@ -31,7 +31,7 @@ def _digest(value):
 
 
 class LocalVectorIndex:
-    def __init__(self, catalog_path, repository, reader, embedder, config, storage=None):
+    def __init__(self, catalog_path, repository, reader, embedder, config, storage=None, reranker=None):
         self.catalog_path, self.repository, self.reader, self.embedder = catalog_path, repository, reader, embedder
         self.config = json.loads(_json(config))
         self.dimension = self.config['embedding']['dimension']
@@ -43,6 +43,11 @@ class LocalVectorIndex:
         if self.provider_id == 'knowledge_local_vector' and storage is not None:
             raise ValueError('Local vector provider cannot own remote storage')
         self.storage = storage
+        from knowledge_platform.local.index_config import validate_retrieval
+        self.retrieval=validate_retrieval(self.config['retrieval']) if 'retrieval' in self.config else None
+        self.reranker=reranker
+        if (reranker is not None)!=(self.retrieval is not None and self.retrieval['rerank'] is not None):
+            raise ValueError('Reranker must match explicit retrieval configuration')
         if type(self.batch_size) is not int or not 1 <= self.batch_size <= 256 or type(self.max_chars) is not int or not 100 <= self.max_chars <= 12000:
             raise ValueError('Invalid vector chunk configuration')
         embedding = self.config['embedding']
@@ -295,16 +300,21 @@ class LocalVectorIndex:
                     groups.append((rows,location));snapshots.append((key,signature,row['generation'],location))
             if not groups:return ()
             await self._verify_sources(source_assets.values(), principal, space_id)
-            raw=await asyncio.to_thread(self.embedder.embed,[query]);q=self._vectors(raw,1)[0]
+            dense_enabled=self.retrieval is None or self.retrieval['vector_weight']>0
+            q=None
+            if dense_enabled:
+                raw=await asyncio.to_thread(self.embedder.embed,[query]);q=self._vectors(raw,1)[0]
+            candidate_limit=max(limit,self.retrieval['candidate_limit']) if self.retrieval is not None else limit
             candidates=[]
             for rows,location in groups:
+                if not dense_enabled:continue
                 if self.storage is None:
                     candidates.extend(rows)
                     continue
                 vectors=[json.loads(row['embedding_json']) for row in rows]
                 await asyncio.to_thread(self.storage.verify,location[1],vectors)
-                hits=await asyncio.to_thread(self.storage.search,location[1],q,limit)
-                if not isinstance(hits,(list,tuple)) or len(hits)!=min(limit,len(rows)):
+                hits=await asyncio.to_thread(self.storage.search,location[1],q,candidate_limit)
+                if not isinstance(hits,(list,tuple)) or len(hits)!=min(candidate_limit,len(rows)):
                     raise RetrievalIndexNotReady('Remote vector results are incomplete')
                 seen=set()
                 for hit in hits:
@@ -315,17 +325,49 @@ class LocalVectorIndex:
                         or type(score) not in (int,float) or not math.isfinite(score)):
                         raise RetrievalIndexNotReady('Remote vector ordinal is invalid')
                     seen.add(ordinal);candidates.append(rows[ordinal])
-            # Source authorization and active generation must still hold after
-            # every remote request. No provider response owns citations.
-            await self._verify_sources(source_assets.values(), principal, space_id)
-            self._verify_publications(snapshots)
-            results=[]
+            # Rank only checked local chunks. The remote channels cannot
+            # supply text, resource URIs, collection identity, or new candidates.
+            all_rows=sorted([row for rows,_ in groups for row in rows],
+                key=lambda row:(row['asset_id'],row['chunk_id']))
+            positions={row['chunk_id']:i for i,row in enumerate(all_rows)}
+            dense=[]
             for item in candidates:
                 vector=self._vectors([json.loads(item['embedding_json'])],1)[0]
                 score=max(0.0,min(1.0,sum(a*b for a,b in zip(q,vector))))
+                dense.append((positions[item['chunk_id']],score))
+            dense.sort(key=lambda item:(-item[1],item[0]))
+            ranked=dense[:candidate_limit]
+            if self.retrieval is not None:
+                if len(all_rows)>10000 or sum(len(row['text'].encode('utf-8')) for row in all_rows)>_MAX_TOTAL_BYTES:
+                    raise RetrievalIndexNotReady('Hybrid corpus exceeds verification bound')
+                from knowledge_platform.retrieval.hybrid import bm25_rank,rrf_fuse
+                lexical=(await asyncio.to_thread(bm25_rank,query,[row['text'] for row in all_rows],candidate_limit)
+                    if self.retrieval['bm25_weight']>0 else [])
+                ranked=rrf_fuse([[i for i,_ in ranked],[i for i,_ in lexical]],
+                    [self.retrieval['vector_weight'],self.retrieval['bm25_weight']],self.retrieval['rrf_k'],candidate_limit)
+                if self.reranker is not None and ranked:
+                    pool=[all_rows[i] for i,_ in ranked]
+                    reranked=await asyncio.to_thread(self.reranker.rerank,query,[row['text'] for row in pool],min(limit,len(pool)))
+                    if not isinstance(reranked,(list,tuple)) or len(reranked)!=min(limit,len(pool)):
+                        raise RetrievalIndexNotReady('Reranker returned incomplete results')
+                    seen=set();ordered=[]
+                    for item in reranked:
+                        if not isinstance(item,(list,tuple)) or len(item)!=2:
+                            raise RetrievalIndexNotReady('Reranker returned invalid results')
+                        ordinal,score=item
+                        if (type(ordinal) is not int or not 0<=ordinal<len(pool) or ordinal in seen
+                            or type(score) not in (int,float) or not math.isfinite(score) or not 0<=score<=1):
+                            raise RetrievalIndexNotReady('Reranker returned invalid identity or score')
+                        seen.add(ordinal);ordered.append((ranked[ordinal][0],float(score)))
+                    ranked=sorted(ordered,key=lambda item:(-item[1],item[0]))
+            # Verify again after fusion/rerank, which may await model HTTP.
+            await self._verify_sources(source_assets.values(), principal, space_id)
+            self._verify_publications(snapshots)
+            results=[]
+            for ordinal,score in ranked[:limit]:
+                item=all_rows[ordinal]
                 results.append(CitationCandidate(item['asset_id'],item['resource_uri'],quote=item['text'][:1200],locator={'chunk_id':item['chunk_id']},score=score))
-            results.sort(key=lambda item:(-(item.score or 0),item.asset_id,item.locator['chunk_id']))
-            return tuple(results[:limit])
+            return tuple(results)
         except RetrievalIndexNotReady:raise
         except Exception as error:
             raise RetrievalProviderError('Vector query is unavailable') from error

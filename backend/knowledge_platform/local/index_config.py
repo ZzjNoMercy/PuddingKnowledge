@@ -1,6 +1,7 @@
 """Explicit host configuration for local persistent vector indexes."""
 from __future__ import annotations
 import json
+import math
 import os
 import re
 from urllib.parse import urlsplit
@@ -46,10 +47,10 @@ def load_index_config(path: Path) -> dict:
         raise ValueError('Index configuration fields are invalid')
     provider_id = value.get('provider_id')
     if provider_id == 'knowledge_local_vector':
-        if set(value) != {'version','provider_id','space_ids','embedding','batch_size','max_chars'}:
+        if set(value)-{'retrieval'} != {'version','provider_id','space_ids','embedding','batch_size','max_chars'}:
             raise ValueError('Index configuration fields are invalid')
     elif provider_id == 'knowledge_milvus_vector':
-        if set(value) != {'version','provider_id','space_ids','embedding','batch_size','max_chars','milvus'}:
+        if set(value)-{'retrieval'} != {'version','provider_id','space_ids','embedding','batch_size','max_chars','milvus'}:
             raise ValueError('Index configuration fields are invalid')
         milvus = value['milvus']
         if not isinstance(milvus, dict) or set(milvus) != {'endpoint', 'api_key_env'}:
@@ -75,6 +76,7 @@ def load_index_config(path: Path) -> dict:
     # Pure validation; this constructor does not contact the endpoint.
     OpenAICompatibleEmbeddingClient(endpoint=embedding['endpoint'],model=embedding['model'],
         dimension=embedding['dimension'],batch_size=value['batch_size'])
+    if 'retrieval' in value: validate_retrieval(value['retrieval'])
     return value
 
 
@@ -100,3 +102,36 @@ def vector_storage(config):
         dimension=config['embedding']['dimension'],
         api_key=os.environ[ref] if ref else '',
     )
+
+
+def validate_retrieval(value):
+    if not isinstance(value,dict) or set(value)!={'candidate_limit','vector_weight','bm25_weight','rrf_k','rerank'}:
+        raise ValueError('Hybrid retrieval configuration fields are invalid')
+    if type(value['candidate_limit']) is not int or not 1<=value['candidate_limit']<=50:
+        raise ValueError('Hybrid candidate limit is invalid')
+    if type(value['rrf_k']) is not int or not 1<=value['rrf_k']<=1000:
+        raise ValueError('Hybrid RRF constant is invalid')
+    weights=[value['vector_weight'],value['bm25_weight']]
+    if any(type(w) not in (int,float) or not math.isfinite(w) or not 0<=w<=100 for w in weights) or not sum(weights)>0:
+        raise ValueError('Hybrid channel weights are invalid')
+    rerank=value['rerank']
+    if rerank is not None:
+        if not isinstance(rerank,dict) or set(rerank)!={'protocol','endpoint','model','api_key_env'} or rerank['protocol']!='dashscope':
+            raise ValueError('Rerank configuration fields are invalid')
+        ref=rerank['api_key_env']
+        if ref is not None and (not isinstance(ref,str) or not re.fullmatch(r'KNOWLEDGE_RERANK_[A-Z0-9_]{1,100}',ref)):
+            raise ValueError('Rerank credential reference is invalid')
+        from knowledge_platform.retrieval.rerank import DashScopeReranker
+        DashScopeReranker(endpoint=rerank['endpoint'],model=rerank['model'])
+    return value
+
+
+def ranking_client(config):
+    if 'retrieval' not in config:return None
+    rerank=validate_retrieval(config['retrieval'])['rerank']
+    if rerank is None:return None
+    ref=rerank['api_key_env']
+    if ref is not None and ref not in os.environ:
+        raise ValueError('Explicit rerank credential environment is missing')
+    from knowledge_platform.retrieval.rerank import DashScopeReranker
+    return DashScopeReranker(endpoint=rerank['endpoint'],model=rerank['model'],api_key=os.environ[ref] if ref else '')

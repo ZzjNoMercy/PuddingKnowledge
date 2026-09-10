@@ -109,13 +109,13 @@ def _build_app(
             document_provider = _CombinedWikiProvider(document_provider, PackageRetrievalProvider(packages, repository))
     vector_index = None
     if index_config is not None:
-        from knowledge_platform.local.index_config import embedding_client, vector_storage
+        from knowledge_platform.local.index_config import embedding_client, vector_storage, ranking_client
         from knowledge_platform.local.vector_index import LocalVectorIndex
         vector_index = LocalVectorIndex(repository._database_path, repository, reader,
-            embedding_client(index_config), index_config, storage=vector_storage(index_config))
+            embedding_client(index_config), index_config, storage=vector_storage(index_config), reranker=ranking_client(index_config))
         index_rebuild = vector_index
-        document_provider = _CombinedWikiProvider(_VectorProvider(vector_index, 'document_rag_query', principal=principal), document_provider)
-        wiki = WikiQueryService(_CombinedWikiProvider(_VectorProvider(vector_index, 'wiki_query', principal=principal), provider), repository)
+        document_provider = _VectorWithFallback(vector_index, 'document_rag_query', principal, document_provider)
+        wiki = WikiQueryService(_VectorWithFallback(vector_index, 'wiki_query', principal, provider), repository)
     document = DocumentRetrievalService(document_provider, repository)
     engines = dict(build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
         document=document if files is not None else None,
@@ -271,6 +271,25 @@ class _VectorProvider:
         return await self.index.search(query=query, space_id=space_id, limit=limit, capability=self.capability, principal=self.principal,
             collection_id=self.collection.collection_id if self.collection is not None else None,
             collection_version=self.collection.version if self.collection is not None else None)
+
+
+class _VectorWithFallback:
+    """Active index results own retrieval for their Assets on direct routes."""
+    def __init__(self,index,capability,principal,fallback):
+        self.index,self.capability,self.principal,self.fallback=index,capability,principal,fallback
+
+    async def search(self,*,query,space_id,limit):
+        results=tuple(await self.index.search(query=query,space_id=space_id,limit=limit,
+            capability=self.capability,principal=self.principal))
+        if len(results)>=limit or self.fallback is None:return results[:limit]
+        indexed_assets=set()
+        for collection in self.index.repository.list_collections(space_id=space_id):
+            binding=collection.get('provider_bindings',{}).get(self.capability,{})
+            if binding.get('provider_id') in {'knowledge_local_vector','knowledge_milvus_vector'}:
+                indexed_assets.update(collection.get('asset_ids',[]))
+        legacy=await self.fallback.search(query=query,space_id=space_id,limit=50)
+        seen={item.asset_id for item in results}
+        return (results+tuple(item for item in legacy if item.asset_id not in indexed_assets and item.asset_id not in seen))[:limit]
 
 
 class _VectorQueryEngine:
