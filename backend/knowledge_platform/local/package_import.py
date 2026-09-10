@@ -563,6 +563,8 @@ class LocalPackagePublisher:
             if "sha256:" + hashlib.sha256(payload).hexdigest() != fact["content_digest"]:
                 raise ValueError("package database Collection integrity mismatch")
             value = json.loads(fact["collection_json"])
+            if not isinstance(value, dict):
+                raise ValueError("package database Collection shape is invalid")
             if (value.get("id") != collection_id or value.get("space_id") != space_id
                     or value.get("version") != collection_version):
                 raise ValueError("package database Collection identity mismatch")

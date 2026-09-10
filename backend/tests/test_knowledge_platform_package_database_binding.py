@@ -25,6 +25,7 @@ def published(tmp_path):
 @pytest.mark.parametrize('mutation',[
     "UPDATE knowledge_datasets SET asset_ids='[\"forged\"]' WHERE id='portable_database'",
     "DELETE FROM knowledge_package_database_collections",
+    "UPDATE knowledge_package_database_collection_facts SET collection_json='[]', content_digest='sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'",
     "UPDATE knowledge_package_imports SET status='staged'",
 ])
 def test_gateway_rejects_current_publication_changes(tmp_path,mutation):

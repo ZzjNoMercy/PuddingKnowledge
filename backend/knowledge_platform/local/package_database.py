@@ -85,6 +85,8 @@ class PublishedDatabaseResolver:
     def resolve(self, *, dataset_id, space_id):
         try:
             self.gateway._verify()
-        except (ValueError, LookupError, OSError):
+        except Exception:
+            # Corrupt persisted facts and unavailable Catalog storage revoke
+            # the binding; they must not escape as an unhandled API error.
             return None
         return self.initial.resolve(dataset_id=dataset_id, space_id=space_id)
