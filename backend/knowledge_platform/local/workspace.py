@@ -206,6 +206,12 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
     manifest = _read_json(state_dir / _MANIFEST, label="state-dir manifest")
     if manifest.get("owner") != "puddingknowledge-local" or type(manifest.get("version")) is not int:
         raise WorkspaceError("state-dir manifest is invalid")
+    if manifest.get("version") == 3 and manifest.get("kind") == "migrated_wiki":
+        from .migrated_wiki import load_migrated_wiki_workspace
+        try:
+            return load_migrated_wiki_workspace(state_dir, manifest)
+        except (ValueError, OSError, RuntimeError) as error:
+            raise WorkspaceError(str(error)) from error
     if manifest.get("version") == 2 and manifest.get("kind") == "migrated_documents":
         for name in _SQLITE_AUXILIARY:
             auxiliary = state_dir / name
@@ -283,15 +289,18 @@ def open_persistent_workspace(
     catalog: Path | None = None,
     wiki_root: Path | None = None,
     document_migration: Path | None = None,
+    wiki_archive: Path | None = None,
 ) -> PersistentWorkspace:
     """Open or atomically initialize a persistent owned workspace."""
 
+    if wiki_archive is not None and any(v is not None for v in (catalog, wiki_root, document_migration)):
+        raise WorkspaceError("Wiki archive requires its own new workspace")
     if document_migration is not None and (catalog is not None or wiki_root is not None):
         raise WorkspaceError("document migration cannot accompany Catalog/Wiki inputs")
     root = _path(state_dir)
     if root == root.parent:
         raise WorkspaceError("state-dir must not be the filesystem root")
-    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", _PROCESSING, *_SQLITE_AUXILIARY}
+    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", _PROCESSING, *_SQLITE_AUXILIARY}
     if root.exists():
         if root.is_symlink() or not root.is_dir():
             raise WorkspaceError("state-dir must be a real directory")
@@ -304,21 +313,28 @@ def open_persistent_workspace(
     try:
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
-        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "retrieval-traces.sqlite3")]
+        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
-        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", _PROCESSING, *_SQLITE_AUXILIARY}
+        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", _PROCESSING, *_SQLITE_AUXILIARY}
         unexpected = [entry for entry in root.iterdir() if entry.name not in allowed]
         if unexpected:
             raise WorkspaceError("state-dir contains unexpected or partial entries")
         if manifest.exists():
-            if document_migration is not None:
-                raise WorkspaceError("document migration only initializes a new workspace")
+            if document_migration is not None or wiki_archive is not None:
+                raise WorkspaceError("migration only initializes a new workspace")
             payload = _load_manifest(root)
         elif any(path.exists() or path.is_symlink() for path in persistent_entries):
             raise WorkspaceError("state-dir is partially initialized")
         else:
-            if document_migration is not None:
+            if wiki_archive is not None:
+                from .migrated_wiki import bootstrap_migrated_wiki
+                try:
+                    bootstrap_migrated_wiki(wiki_archive, root)
+                except Exception as error:
+                    raise WorkspaceError(str(error)) from error
+                payload = _load_manifest(root)
+            elif document_migration is not None:
                 from .migrated_documents import bootstrap_migrated_documents
                 try:
                     bootstrap_migrated_documents(document_migration, root)

@@ -31,8 +31,7 @@ Archive integrity does not establish schema compatibility, page frontmatter or
 link correctness, receipt lineage, successful compilation, or query acceptance.
 Schema files and `AGENTS.md` are preserved as data and are never executed by the
 archiver. `wiki_semantics_verified`, `complete_installation_migration` and
-`activation_allowed` remain false. The persistent workspace does not yet consume this archive; the aggregate
-migration protocol integration is described below.
+`activation_allowed` remain false. The aggregate protocol and owned query workspace integrations are described below.
 
 The next migration step must build an owned Catalog/query projection from this
 verified evidence, preserve original identities and Raw consumption lineage, and
@@ -60,6 +59,34 @@ verifies completed artifacts before any domain operation. Source archives and
 the copied Wiki are rechecked before the final receipt. Existing installation
 activation flags remain false.
 
-Persistent workspace consumption, Catalog/query projection and Wiki semantic
-compatibility remain pending; the aggregate protocol now preserves the evidence
-needed for that work.
+The owned workspace can consume this evidence as a query projection, described
+below. Wiki semantic compatibility and combined document/Wiki workspace merge
+remain pending.
+
+## Owned Wiki query workspace
+
+A new local workspace can consume a verified archive directly:
+
+```sh
+python -m knowledge_platform.local \
+  --wiki-archive /absolute/migration/wiki \
+  --state-dir /absolute/knowledge/wiki-state \
+  --temp-dir /absolute/new/unused-temp \
+  --ready-file /absolute/new/wiki-ready.json --port 18882
+```
+
+Restart with the same `--state-dir` and new ready/temp paths, omitting
+`--wiki-archive`. The workspace owns `wiki-evidence`, preserving the complete
+archive envelope, and a separate Catalog containing its active Wiki pages.
+The original brain root and migration archive can be disconnected after
+initialization. Their deletion is never performed by the runtime.
+
+Space and Collection identity are derived from the explicit installation
+identity; page identities additionally bind the relative Wiki slug. Page content
+changes and archive relocation do not create new identities. Read and query
+bindings use owned files, while the original Raw/schema/history remain evidence.
+
+Initialization is for a new workspace only. It cannot yet merge with an existing
+document workspace. A partial initialization retains its marker and fails closed.
+This mode provides a query projection; schema/compiler compatibility and complete
+installation migration remain unverified and activation remains disabled.

@@ -113,7 +113,10 @@ def _snapshot_catalog(catalog_path: Path, temporary_catalog: Path) -> None:
         target.close()
         source.close()
 
-def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root: Path) -> dict[str, Any]:
+def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root: Path, *, space_id: str = _SPACE_ID, collection_id: str = _DATASET_ID) -> dict[str, Any]:
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", value)
+           for value in (space_id, collection_id)):
+        raise ValueError("Invalid local Wiki Space/Collection identity")
     # Normalize host-provided roots once at the boundary.  ``_safe_pages``
     # already normalizes its own input, but the relative-path form would make
     # ``page.relative_to(wiki_root)`` compare absolute pages with a relative
@@ -125,7 +128,7 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
     for page in pages:
         slug = page.relative_to(wiki_root).with_suffix("").as_posix()
         content_digest, size = _file_digest(page)
-        asset_id = "asset_wiki_" + hashlib.sha256(f"{_SPACE_ID}:{slug}".encode()).hexdigest()[:32]
+        asset_id = "asset_wiki_" + hashlib.sha256(f"{space_id}:{slug}".encode()).hexdigest()[:32]
         records.append((asset_id, page, slug, size, content_digest))
 
     connection = sqlite3.connect(temporary_catalog)
@@ -133,13 +136,15 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
         connection.execute("PRAGMA foreign_keys=ON")
         dataset = connection.execute(
             "SELECT asset_ids, capabilities, version FROM knowledge_datasets WHERE id = ? AND space_id = ?",
-            (_DATASET_ID, _SPACE_ID),
+            (collection_id, space_id),
         ).fetchone()
         if dataset is None:
             raise ValueError("staged Catalog does not contain the expected local Collection")
         asset_ids = json.loads(dataset[0])
         capabilities = json.loads(dataset[1])
-        if not isinstance(asset_ids, list) or not isinstance(capabilities, list):
+        if (not isinstance(asset_ids, list) or not isinstance(capabilities, list)
+                or any(not isinstance(value, str) for value in [*asset_ids, *capabilities])
+                or len(set(asset_ids)) != len(asset_ids) or len(set(capabilities)) != len(capabilities)):
             raise ValueError("staged Catalog Collection metadata is malformed")
         collection_version = str(dataset[2])
         created_at = datetime.now(UTC).isoformat()
@@ -149,10 +154,10 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
                 "SELECT space_id, kind, source_type, source_uri, metadata_json FROM knowledge_assets WHERE id = ?",
                 (asset_id,),
             ).fetchone()
-            uri = f"knowledge://spaces/{_SPACE_ID}/assets/{asset_id}"
+            uri = f"knowledge://spaces/{space_id}/assets/{asset_id}"
             if existing is not None:
                 metadata = json.loads(existing[4])
-                if (existing[:4] != (_SPACE_ID, "wiki_page", "local_published_wiki", uri)
+                if (existing[:4] != (space_id, "wiki_page", "local_published_wiki", uri)
                         or not isinstance(metadata, dict) or metadata.get("wiki_slug") != slug):
                     raise ValueError("local Wiki Asset id is owned by a different source")
             connection.execute(
@@ -167,9 +172,9 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
                     updated_at=excluded.updated_at""",
                 (
                     asset_id,
-                    _SPACE_ID,
+                    space_id,
                     title,
-                    f"knowledge://spaces/{_SPACE_ID}/assets/{asset_id}",
+                    f"knowledge://spaces/{space_id}/assets/{asset_id}",
                     content_digest,
                     content_digest,
                     json.dumps({"published": True, "wiki_slug": slug, "bytes": size}, ensure_ascii=False),
@@ -186,8 +191,8 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
             (
                 json.dumps(asset_ids, ensure_ascii=False),
                 json.dumps(capabilities, ensure_ascii=False),
-                _DATASET_ID,
-                _SPACE_ID,
+                collection_id,
+                space_id,
             ),
         )
         connection.commit()
@@ -196,12 +201,12 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
     SqliteCollectionFreshnessWriter(temporary_catalog).observe(
         principal=Principal(
             subject_id="phase6-local-wiki-shadow",
-            scopes=("knowledge.processing", f"knowledge.space:{_SPACE_ID}"),
+            scopes=("knowledge.processing", f"knowledge.space:{space_id}"),
         ),
         observation=CollectionFreshnessObservation(
-            collection_id=_DATASET_ID,
+            collection_id=collection_id,
             collection_version=collection_version,
-            space_id=_SPACE_ID,
+            space_id=space_id,
             capability="wiki_query",
             state="ready",
             mode="local_published_wiki",
