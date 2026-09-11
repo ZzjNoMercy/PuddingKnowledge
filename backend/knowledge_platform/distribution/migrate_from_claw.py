@@ -1,6 +1,6 @@
 """Versioned process boundary for offline Claw migration, owned by Knowledge.
 
-Only document Catalog/body conversion is currently implemented. The receipt
+Document conversion and optional Wiki evidence archiving are implemented. The receipt
 explicitly lists pending domains and never grants installation PREPARED/CUTOVER.
 """
 import argparse
@@ -14,8 +14,10 @@ from .catalog_snapshot import _path, _identity
 from .catalog_normalization import normalize_catalog, _digest_file as _normalization_digest
 from .document_migration import TOKEN, _digest, _encode, _read, _sync_directory, prepare_document_migration
 from .sqlite_reverse_delta import _file_digest
+from .wiki_archive import prepare_wiki_archive, verify_archive
 
 REQUEST_FORMAT = 'puddingknowledge-migrate-from-claw-request/v1'
+REQUEST_FORMAT_V2 = 'puddingknowledge-migrate-from-claw-request/v2'
 FORMAT = 'puddingknowledge-migrate-from-claw-receipt/v1'
 _MAX_REQUEST = 1024 * 1024
 
@@ -53,6 +55,23 @@ def _write(path, data):
     part.unlink(); _sync_directory(path.parent)
 
 
+def _verify_artifacts(output, artifacts):
+    if not isinstance(artifacts, dict) or not 1 <= len(artifacts) <= 10000:
+        raise ValueError('Artifact count exceeds protocol budget')
+    total = 0
+    for relative, expected in artifacts.items():
+        if not isinstance(relative, str) or not relative or any(p in {'', '.', '..'} for p in relative.split('/')) or '\\' in relative:
+            raise ValueError('Invalid artifact path')
+        path = _path(output/relative)
+        if not path.is_relative_to(output): raise ValueError('Artifact escaped output')
+        info = path.stat(); _identity(path)
+        total += info.st_size
+        if info.st_mode & 0o077 or info.st_size > 64*1024*1024 or total > 256*1024*1024:
+            raise ValueError('Artifacts exceed protocol budget')
+        if not isinstance(expected, str) or 'sha256:'+_file_digest(path) != expected:
+            raise ValueError('Completed artifact changed')
+
+
 def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate=None):
     if not Path(request_path).expanduser().is_absolute() or not Path(output).expanduser().is_absolute():
         raise ValueError('Protocol paths must be absolute')
@@ -63,21 +82,24 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
     raw = _private_read(request_path)
     request = _json(raw)
     required = {'format','installation_id','source_revision','source_schema_revision','source_catalog','source_files_root','bindings'}
-    if set(request) != required or request['format'] != REQUEST_FORMAT:
+    wiki_requested = request.get('format') == REQUEST_FORMAT_V2
+    if wiki_requested: required.add('source_wiki_root')
+    if set(request) != required or request['format'] not in (REQUEST_FORMAT, REQUEST_FORMAT_V2):
         raise ValueError('Unsupported migration request')
     for key in ('installation_id','source_revision','source_schema_revision'):
         if not isinstance(request[key], str) or not TOKEN.fullmatch(request[key]):
             raise ValueError('Invalid migration source identity')
-    for key in ('source_catalog', 'source_files_root'):
+    for key in ('source_catalog', 'source_files_root', *(['source_wiki_root'] if wiki_requested else [])):
         if not isinstance(request[key], str) or not Path(request[key]).expanduser().is_absolute():
             raise ValueError('Source paths must be absolute')
     catalog, files_root = _path(request['source_catalog']), _path(request['source_files_root'])
-    if not catalog.is_relative_to(snapshot) or not files_root.is_relative_to(snapshot):
+    wiki_root = _path(request['source_wiki_root']) if wiki_requested else None
+    if not catalog.is_relative_to(snapshot) or not files_root.is_relative_to(snapshot) or (wiki_root is not None and not wiki_root.is_relative_to(snapshot)):
         raise ValueError('Knowledge sources must belong to the approved snapshot')
     if output == snapshot or output.is_relative_to(snapshot) or snapshot.is_relative_to(output):
         raise ValueError('Snapshot and target must be disjoint')
     if not isinstance(request['bindings'], dict): raise ValueError('Document bindings required')
-    for source in (request_path, catalog, files_root):
+    for source in (request_path, catalog, files_root, *([wiki_root] if wiki_root is not None else [])):
         if source == output or source.is_relative_to(output) or output.is_relative_to(source):
             raise ValueError('Migration source and output overlap')
     if not output.exists(): output.mkdir(mode=0o700); _sync_directory(output.parent)
@@ -90,7 +112,7 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
             raise ValueError('Invalid migration protocol lock')
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        allowed = {'.migrate.lock','plan.json','plan.json.part','receipt.json','receipt.json.part','candidate','normalization'}
+        allowed = {'.migrate.lock','plan.json','plan.json.part','receipt.json','receipt.json.part','candidate','normalization', *({'wiki'} if wiki_requested else set())}
         if any(p.name not in allowed for p in output.iterdir()): raise ValueError('Unknown migration protocol output')
         normalization = _path(output/'normalization')
         if normalization.exists():
@@ -108,7 +130,7 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
                     if not stat.S_ISREG(left.st_mode) or left.st_nlink != 2 or left.st_mode & 0o077:
                         raise ValueError('Invalid interrupted protocol publication')
                     part.unlink(); _sync_directory(output)
-        plan = {'format':REQUEST_FORMAT, 'request_digest':_digest(raw), 'source_snapshot_identity':_digest(str(snapshot).encode())}
+        plan = {'format':request['format'], 'request_digest':_digest(raw), 'source_snapshot_identity':_digest(str(snapshot).encode())}
         plan_path = output/'plan.json'
         if plan_path.exists():
             if _private_read(plan_path) != _encode(plan): raise ValueError('Migration request changed')
@@ -124,6 +146,10 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
                 if relative in previous_artifacts:
                     if _normalization_digest(output/relative)['digest'] != previous_artifacts[relative]:
                         raise ValueError('Completed normalization artifact changed')
+        if previous is not None and wiki_requested:
+            # Completed receipt artifacts are immutable. Never repair a missing
+            # archive from source before checking this commitment.
+            _verify_artifacts(output, _json(previous)['artifacts'])
         candidate = output/'candidate'
         # A raw Home snapshot may carry committed pages in WAL (or require a
         # rollback journal). Normalize only a private copy before delegating to
@@ -140,6 +166,8 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             normalization_report = None
             prepare_document_migration(catalog, files_root, request['bindings'], candidate,
                 installation_id=request['installation_id'], source_revision=request['source_revision'])
+        if wiki_root is not None:
+            prepare_wiki_archive(wiki_root, output/'wiki', installation_id=request['installation_id'], source_revision=request['source_revision'])
         if _after_candidate: _after_candidate()
         if normalization_report is not None:
             normalize_catalog(catalog, normalization)
@@ -160,15 +188,27 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             actual = 'sha256:'+_file_digest(path)
             if actual != expected: raise ValueError('Candidate artifact changed')
             artifacts['candidate/'+relative] = actual
+        if wiki_root is not None:
+            wiki_manifest = verify_archive(output/'wiki')
+            for name in ('plan.json', 'checkpoint.json', 'manifest.json'):
+                artifacts['wiki/'+name] = _digest(_private_read(output/'wiki'/name, 32*1024*1024))
+            for name, fact in wiki_manifest['files'].items():
+                artifacts['wiki/archive/'+name] = 'sha256:'+fact['sha256']
+        _verify_artifacts(output, artifacts)
         receipt = {'format':FORMAT,'request_digest':plan['request_digest'],'source_snapshot_identity':plan['source_snapshot_identity'],
             'state':'verified_inactive_partial','artifacts':artifacts,
-            'covered_domains':['document_catalog','document_blobs'],
+            'covered_domains':['document_catalog','document_blobs', *(['wiki_archive'] if wiki_requested else [])],
             'pending_domains':['other_catalog_domains','wiki','indexes','knowledge_credentials'],
             'activation_allowed':False,'installation_prepared':False,'writer_fence_verified':False,
             'credential_rebind_required':True}
         if _private_read(request_path) != raw or _private_read(plan_path) != _encode(plan):
             raise ValueError('Migration request changed during delegation')
+        if wiki_root is not None:
+            # Recheck original input and output after enumeration and callbacks.
+            prepare_wiki_archive(wiki_root, output/'wiki', installation_id=request['installation_id'], source_revision=request['source_revision'])
+            _verify_artifacts(output, artifacts)
         result = _encode(receipt)
+        if len(result) > _MAX_REQUEST: raise ValueError('Receipt exceeds protocol budget')
         if previous is not None and previous != result: raise ValueError('Existing receipt disagrees with candidate')
         if previous is None: _write(receipt_path, result)
         return receipt
