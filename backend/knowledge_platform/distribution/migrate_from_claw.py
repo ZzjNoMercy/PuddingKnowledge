@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 
 from .catalog_snapshot import _path, _identity
+from .catalog_normalization import normalize_catalog, _digest_file as _normalization_digest
 from .document_migration import TOKEN, _digest, _encode, _read, _sync_directory, prepare_document_migration
 from .sqlite_reverse_delta import _file_digest
 
@@ -89,8 +90,15 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
             raise ValueError('Invalid migration protocol lock')
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        allowed = {'.migrate.lock','plan.json','plan.json.part','receipt.json','receipt.json.part','candidate'}
+        allowed = {'.migrate.lock','plan.json','plan.json.part','receipt.json','receipt.json.part','candidate','normalization'}
         if any(p.name not in allowed for p in output.iterdir()): raise ValueError('Unknown migration protocol output')
+        normalization = _path(output/'normalization')
+        if normalization.exists():
+            if not normalization.is_dir() or normalization.stat().st_mode & 0o077:
+                raise ValueError('Invalid Catalog normalization output')
+            normalization_allowed = {'.lock','plan.json','plan.json.part','catalog.sqlite3','report.json','report.json.part','.work'}
+            if any(p.name not in normalization_allowed for p in normalization.iterdir()):
+                raise ValueError('Unknown Catalog normalization output')
         # Recover only our exact interrupted no-replace publication pair.
         for name in ('plan.json', 'receipt.json'):
             final, part = output/name, output/(name+'.part')
@@ -109,13 +117,39 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         else: _write(plan_path, _encode(plan))
         receipt_path = output/'receipt.json'
         previous = _private_read(receipt_path) if receipt_path.exists() else None
+        if previous is not None:
+            previous_artifacts = _json(previous).get('artifacts', {})
+            if not isinstance(previous_artifacts, dict): raise ValueError('Invalid previous receipt')
+            for relative in ('normalization/plan.json','normalization/catalog.sqlite3','normalization/report.json'):
+                if relative in previous_artifacts:
+                    if _normalization_digest(output/relative)['digest'] != previous_artifacts[relative]:
+                        raise ValueError('Completed normalization artifact changed')
         candidate = output/'candidate'
-        prepare_document_migration(catalog, files_root, request['bindings'], candidate,
-            installation_id=request['installation_id'], source_revision=request['source_revision'])
+        # A raw Home snapshot may carry committed pages in WAL (or require a
+        # rollback journal). Normalize only a private copy before delegating to
+        # document migration; the approved snapshot is never opened as SQLite.
+        sidecars = tuple(_path(str(catalog) + suffix) for suffix in ('-wal','-shm','-journal') if _path(str(catalog) + suffix).exists())
+        if sidecars:
+            normalization.mkdir(mode=0o700, exist_ok=True)
+            if normalization.stat().st_mode & 0o077: raise ValueError('Catalog normalization output is not private')
+            normalized_catalog, normalization_report = normalize_catalog(catalog, normalization)
+            prepare_document_migration(normalized_catalog, files_root, request['bindings'], candidate,
+                installation_id=request['installation_id'], source_revision=request['source_revision'])
+        else:
+            if normalization.exists(): raise ValueError('Source Catalog sidecar bundle changed')
+            normalization_report = None
+            prepare_document_migration(catalog, files_root, request['bindings'], candidate,
+                installation_id=request['installation_id'], source_revision=request['source_revision'])
         if _after_candidate: _after_candidate()
+        if normalization_report is not None:
+            normalize_catalog(catalog, normalization)
         manifest_bytes = _private_read(candidate/'manifest.json')
         manifest = _json(manifest_bytes)
         artifacts = {'candidate/manifest.json': _digest(manifest_bytes)}
+        if normalization_report is not None:
+            for relative in ('normalization/catalog.sqlite3', 'normalization/plan.json', 'normalization/report.json'):
+                path = output/relative
+                artifacts[relative] = 'sha256:' + _file_digest(path) if path.name == 'catalog.sqlite3' else _digest(_private_read(path))
         total = 0
         for relative, expected in manifest['files'].items():
             path = _path(candidate/relative)

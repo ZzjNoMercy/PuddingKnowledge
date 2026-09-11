@@ -52,3 +52,35 @@ existing competing file. Unknown files, changed source, altered artifacts and
 changed receipts fail closed. Failure stdout contains a fixed error code and no
 request paths or secrets. The explicit installed executable is a trusted local
 provider; the receipt is not a cryptographic attestation of arbitrary executables.
+
+## Normalize raw SQLite sidecars without modifying the snapshot
+
+When the approved Catalog has WAL, SHM or rollback-journal siblings, Knowledge
+copies the bounded bundle into `normalization/.work` under its own output. Only
+that copy is opened with SQLite. Backup materializes a separate file, with
+trusted schema disabled, a page/byte budget, progress deadline and integrity
+check. The committed raw snapshot is never opened as a SQLite connection.
+A stopped writer's hot rollback journal is recovered on the copy; committed WAL
+pages are included in the normalized Catalog. Source member digests are checked
+before/after copy and after materialization, then again before the receipt.
+
+The directory has its own lock and immutable source plan. Interrupted work can
+be rebuilt only after its known private entries are checked. Same-inode partial
+link publication pairs resume. A published report commits the normalized Catalog
+bytes; completed artifacts are never silently repaired. Source bundle changes,
+unknown work files and modified completed artifacts reject replay. Catalog and
+report names are separate from raw work-copy names, including when the original
+Catalog is named `catalog.sqlite3`.
+
+The v1 receipt's top-level fields stay unchanged. Its existing `artifacts` map
+additionally covers `normalization/plan.json`, `normalization/report.json` and
+`normalization/catalog.sqlite3`. The report binds the source plan digest and
+normalized file digest/size; no host source paths or secret values are printed.
+Inputs with no sidecars keep the existing direct offline converter and artifact
+layout for compatibility. Normalization is limited to 64 MiB per member,
+256 MiB per raw bundle and a 5 second SQLite materialization budget.
+
+This does not acquire source-writer authority or migrate other Catalog domains.
+It consumes an immutable approved snapshot, and all existing partial/inactive
+flags remain in force. The normalized legacy Catalog is intermediate evidence,
+not the target Knowledge Catalog and never a Harness database.

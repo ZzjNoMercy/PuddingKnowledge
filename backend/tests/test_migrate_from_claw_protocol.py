@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,7 @@ def test_receipt_is_bound_inactive_and_resumable(tmp_path):
     result = migrate_from_claw(request, output, source_snapshot=tmp_path/'snapshot')
     assert result['request_digest'] == 'sha256:'+hashlib.sha256(request.read_bytes()).hexdigest()
     assert result['installation_prepared'] is False and result['pending_domains']
+    assert not (output/'normalization').exists()
     assert str(tmp_path) not in json.dumps(result)
     for name, digest in result['artifacts'].items():
         assert 'sha256:'+hashlib.sha256((output/name).read_bytes()).hexdigest() == digest
@@ -134,3 +136,26 @@ def test_request_cannot_select_another_snapshot(tmp_path):
     with pytest.raises(ValueError, match='approved snapshot'):
         migrate_from_claw(request, output, source_snapshot=other)
     assert not output.exists()
+
+
+def test_raw_catalog_wal_is_materialized_from_private_copy(tmp_path):
+    request, output = fixture(tmp_path)
+    catalog = tmp_path / 'snapshot' / 'legacy.sqlite3'
+    writer = sqlite3.connect(catalog)
+    try:
+        assert writer.execute('PRAGMA journal_mode=WAL').fetchone()[0].lower() == 'wal'
+        writer.execute("UPDATE knowledge_documents SET title='WAL title' WHERE id='doc-1'")
+        writer.commit()
+        wal = Path(str(catalog) + '-wal')
+        assert wal.exists()
+        before = {path.name: hashlib.sha256(path.read_bytes()).digest() for path in (catalog, wal, Path(str(catalog) + '-shm'))}
+        result = migrate_from_claw(request, output, source_snapshot=tmp_path/'snapshot')
+        assert result['activation_allowed'] is False
+        assert 'source_catalog_bundle_digest' not in result
+        assert 'normalization/report.json' in result['artifacts']
+        assert json.loads((output/'normalization/report.json').read_text())['plan_digest'].startswith('sha256:')
+        assert migrate_from_claw(request, output, source_snapshot=tmp_path/'snapshot') == result
+        after = {path.name: hashlib.sha256(path.read_bytes()).digest() for path in (catalog, wal, Path(str(catalog) + '-shm'))}
+        assert after == before
+    finally:
+        writer.close()
