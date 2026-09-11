@@ -175,3 +175,15 @@ test('start forwards index config and index posts exact body with ownership head
   globalThis.fetch = async () => new Response(JSON.stringify({ status: 'ok', data: {} }), { status: 200, headers: { 'X-PuddingKnowledge-Instance': 'wrong-instance' } });
   await assert.rejects(packageCommand('index', home, body), /ownership or response/);
 });
+
+test('document bootstrap and persistent restart do not require Wiki sources', async t => {
+  const { home, staged } = await fixture(t);
+  const bin = path.join(home, 'environments', staged.runtime_manifest_digest.slice(7), 'bin');
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, 'python'), '#!/usr/bin/env node\nif (process.argv.includes("--catalog") || process.argv.includes("--wiki-root") || !process.argv.includes("--state-dir")) process.exit(9);\nconsole.log(JSON.stringify({format:"puddingknowledge-local-supervisor/v1",status:"stopped"}));\n', { mode: 0o700 });
+  await writeFile(path.join(home, 'runtime/installed.json'), JSON.stringify({ schema_version: 1, runtime_manifest_digest: staged.runtime_manifest_digest, status: 'installed_not_running', activation_allowed: false }));
+  for (const extra of [{ document_migration: path.join(home, 'candidate') }, {}]) {
+    const result = await runtimeCommand('start', home, { state_dir: path.join(home, 'state'), port: 19001, ...extra });
+    assert.equal(result.status, 'stopped');
+  }
+});

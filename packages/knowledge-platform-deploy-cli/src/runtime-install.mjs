@@ -145,10 +145,10 @@ export async function runtimeCommand(command, home, flags = {}) {
   if (command === 'start') {
     const current = await deployment(home);
     if (current.digest !== digest) throw error('Install the current staged release before starting');
-    for (const name of ['catalog', 'wiki_root', 'port']) {
+    for (const name of (flags.state_dir ? ['port'] : ['catalog', 'wiki_root', 'port'])) {
       if (!flags[name]) throw error(`start requires --${name.replaceAll('_', '-')}`, 'argument_error');
     }
-    for (const name of ['catalog', 'wiki_root', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config', 'file_config', 'package_config', 'index_config']) {
+    for (const name of ['catalog', 'wiki_root', 'document_migration', 'port', 'database_config', 'structured_config', 'state_dir', 'wiki_config', 'capture_config', 'feishu_config', 'file_config', 'package_config', 'index_config']) {
       if (flags[name]) args.push(`--${name.replaceAll('_', '-')}`, String(flags[name]));
     }
   }

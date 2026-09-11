@@ -218,14 +218,15 @@ def _open_lifecycle_lock(home: Path) -> int:
 
 def _child_command(
     *,
-    catalog: Path,
-    wiki_root: Path,
+    catalog: Path | None,
+    wiki_root: Path | None,
     port: int,
     run_dir: Path,
     lifeline_fd: int,
     database_config: Path | None,
     structured_config: Path | None,
     state_dir: Path | None = None,
+    document_migration: Path | None = None,
     wiki_config: Path | None = None,
     capture_config: Path | None = None,
     feishu_config: Path | None = None,
@@ -237,10 +238,6 @@ def _child_command(
         sys.executable,
         "-m",
         "knowledge_platform.local",
-        "--catalog",
-        str(catalog),
-        "--wiki-root",
-        str(wiki_root),
         "--temp-dir",
         str(run_dir / "workspace"),
         "--ready-file",
@@ -254,7 +251,7 @@ def _child_command(
         runtime.extend(("--database-config", str(database_config)))
     if structured_config is not None:
         runtime.extend(("--structured-config", str(structured_config)))
-    for name, value in (("state-dir", state_dir), ("wiki-config", wiki_config), ("capture-config", capture_config), ("feishu-config", feishu_config), ("file-config", file_config), ("package-config", package_config), ("index-config", index_config)):
+    for name, value in (("catalog", catalog), ("wiki-root", wiki_root), ("document-migration", document_migration), ("state-dir", state_dir), ("wiki-config", wiki_config), ("capture-config", capture_config), ("feishu-config", feishu_config), ("file-config", file_config), ("package-config", package_config), ("index-config", index_config)):
         if value is not None:
             runtime.extend(("--" + name, str(value)))
     return [
@@ -398,7 +395,8 @@ def _manager_main(args: argparse.Namespace) -> int:
         with log_path.open("ab") as log:
             child = subprocess.Popen(
                 _child_command(
-                    catalog=Path(args.catalog), wiki_root=Path(args.wiki_root), port=args.port,
+                    catalog=Path(args.catalog) if args.catalog else None, wiki_root=Path(args.wiki_root) if args.wiki_root else None,
+                    document_migration=Path(args.document_migration) if args.document_migration else None, port=args.port,
                     run_dir=run_dir, lifeline_fd=lifeline_read,
                     database_config=Path(args.database_config) if args.database_config else None,
                     structured_config=Path(args.structured_config) if args.structured_config else None,
@@ -560,12 +558,12 @@ def _start(args: argparse.Namespace) -> dict[str, Any]:
         })
         command = [
             sys.executable, "-m", "knowledge_platform.local.supervisor", "_manager",
-            "--home", str(home), "--catalog", str(Path(args.catalog)), "--wiki-root", str(Path(args.wiki_root)),
+            "--home", str(home),
             "--port", str(args.port), "--run-dir", str(run_dir), "--lock-fd", str(lock_fd),
         ]
         if args.database_config:
             command.extend(("--database-config", str(Path(args.database_config))))
-        for name in ("state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "index_config"):
+        for name in ("catalog", "wiki_root", "document_migration", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "index_config"):
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(("--" + name.replace("_", "-"), str(value)))
@@ -620,8 +618,9 @@ def _parser() -> argparse.ArgumentParser:
         sub = subparsers.add_parser(name)
         sub.add_argument("--home", type=Path, required=True)
         if name == "start":
-            sub.add_argument("--catalog", type=Path, required=True)
-            sub.add_argument("--wiki-root", type=Path, required=True)
+            sub.add_argument("--catalog", type=Path)
+            sub.add_argument("--wiki-root", type=Path)
+            sub.add_argument("--document-migration", type=Path)
             sub.add_argument("--port", type=int, required=True)
             sub.add_argument("--database-config", type=Path)
             sub.add_argument("--structured-config", type=Path)
@@ -633,8 +632,10 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--package-config", type=Path)
             sub.add_argument("--index-config", type=Path)
     manager = subparsers.add_parser("_manager")
-    for name in ("home", "catalog", "wiki-root", "run-dir"):
+    for name in ("home", "run-dir"):
         manager.add_argument("--" + name, required=True)
+    for name in ("catalog", "wiki-root", "document-migration"):
+        manager.add_argument("--" + name)
     manager.add_argument("--port", type=int, required=True)
     manager.add_argument("--lock-fd", required=True)
     manager.add_argument("--database-config")
@@ -660,6 +661,10 @@ def main(argv: list[str] | None = None) -> int:
             return _manager_main(args)
         home = _home_path(args.home)
         if args.command == "start":
+            if args.document_migration and (not args.state_dir or args.catalog or args.wiki_root):
+                raise SupervisorError("document-migration requires state-dir without Catalog/Wiki inputs")
+            if not args.state_dir and (not args.catalog or not args.wiki_root):
+                raise SupervisorError("catalog and wiki-root are required without state-dir")
             if not 1 <= args.port <= 65535:
                 raise SupervisorError("port must be in 1..65535")
             result = _start(args)

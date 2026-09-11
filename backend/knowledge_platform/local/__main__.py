@@ -60,6 +60,7 @@ def main() -> int:
     for name in ("temp-dir", "ready-file"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--document-migration", type=Path, help="verified offline document candidate; first state-dir start only")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--console-origin")
     parser.add_argument("--asset-binding-review-queue", type=Path)
@@ -75,6 +76,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.state_dir is None and (args.catalog is None or args.wiki_root is None):
         parser.error("--catalog and --wiki-root are required without --state-dir")
+    if args.document_migration and (args.state_dir is None or args.catalog or args.wiki_root):
+        parser.error("--document-migration requires --state-dir and cannot accompany Catalog/Wiki inputs")
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")
     if args.instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", args.instance_id):
@@ -153,7 +156,7 @@ def main() -> int:
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local Wiki configuration\n")
     ready = _output_path(args.ready_file)
-    persistent = (open_persistent_workspace(args.state_dir, catalog=args.catalog, wiki_root=args.wiki_root)
+    persistent = (open_persistent_workspace(args.state_dir, catalog=args.catalog, wiki_root=args.wiki_root, document_migration=args.document_migration)
                   if args.state_dir is not None else nullcontext(None))
     # Hold the persistent workspace lock for the entire server lifetime.
     with persistent as owned, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -223,6 +226,7 @@ def main() -> int:
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
+            *(f"knowledge.space:{space}" for space in materialized.get("space_ids", [])),
             *(f"knowledge.space:{space}" for space in (package_config or {}).get("space_ids", [])),
             *(f"knowledge.space:{space}" for space in (index_config or {}).get("space_ids", [])),
             *database_scopes,
@@ -241,6 +245,7 @@ def main() -> int:
             packages=packages,
             package_config=package_config,
             index_config=index_config,
+            document_bindings=materialized.get("document_bindings"),
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )
@@ -262,7 +267,7 @@ def main() -> int:
                 return response
         with ready.open("x", encoding="utf-8") as stream:
             json.dump({"status": "ready", "pages": materialized["pages"],
-                       "activation_allowed": False, "database_configured": bool(database_config),
+                       "activation_allowed": False, "migrated_documents": len(materialized.get("document_bindings", {})), "database_configured": bool(database_config),
                        "structured_configured": bool(structured_config),
                        "files_configured": files is not None,
                        "packages_configured": packages is not None, "index_configured": index_config is not None,

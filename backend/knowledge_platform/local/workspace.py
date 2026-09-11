@@ -204,7 +204,24 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
     if marker.exists() or marker.is_symlink():
         raise WorkspaceError("state-dir contains an incomplete initialization")
     manifest = _read_json(state_dir / _MANIFEST, label="state-dir manifest")
-    if manifest.get("owner") != "puddingknowledge-local" or type(manifest.get("version")) is not int or manifest.get("version") != 1 or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("wiki_root") != "wiki":
+    if manifest.get("owner") != "puddingknowledge-local" or type(manifest.get("version")) is not int:
+        raise WorkspaceError("state-dir manifest is invalid")
+    if manifest.get("version") == 2 and manifest.get("kind") == "migrated_documents":
+        for name in _SQLITE_AUXILIARY:
+            auxiliary = state_dir / name
+            if auxiliary.exists() or auxiliary.is_symlink():
+                _regular(auxiliary, label="owned SQLite auxiliary")
+                if auxiliary.stat().st_nlink != 1:
+                    raise WorkspaceError("owned SQLite auxiliary is hardlinked")
+        processing = state_dir / _PROCESSING
+        if (processing.exists() or processing.is_symlink()) and (processing.is_symlink() or not processing.is_dir()):
+            raise WorkspaceError("state-dir processing root must be a real directory")
+        from .migrated_documents import load_migrated_workspace
+        try:
+            return load_migrated_workspace(state_dir, manifest)
+        except (ValueError, OSError, RuntimeError) as error:
+            raise WorkspaceError(str(error)) from error
+    if manifest.get("version") != 1 or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("wiki_root") != "wiki":
         raise WorkspaceError("state-dir manifest is invalid")
     catalog = state_dir / "catalog.sqlite3"
     wiki_root = state_dir / "wiki"
@@ -265,13 +282,16 @@ def open_persistent_workspace(
     *,
     catalog: Path | None = None,
     wiki_root: Path | None = None,
+    document_migration: Path | None = None,
 ) -> PersistentWorkspace:
     """Open or atomically initialize a persistent owned workspace."""
 
+    if document_migration is not None and (catalog is not None or wiki_root is not None):
+        raise WorkspaceError("document migration cannot accompany Catalog/Wiki inputs")
     root = _path(state_dir)
     if root == root.parent:
         raise WorkspaceError("state-dir must not be the filesystem root")
-    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", _PROCESSING, *_SQLITE_AUXILIARY}
+    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", _PROCESSING, *_SQLITE_AUXILIARY}
     if root.exists():
         if root.is_symlink() or not root.is_dir():
             raise WorkspaceError("state-dir must be a real directory")
@@ -284,21 +304,31 @@ def open_persistent_workspace(
     try:
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
-        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "retrieval-traces.sqlite3")]
+        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
-        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", _PROCESSING, *_SQLITE_AUXILIARY}
+        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", _PROCESSING, *_SQLITE_AUXILIARY}
         unexpected = [entry for entry in root.iterdir() if entry.name not in allowed]
         if unexpected:
             raise WorkspaceError("state-dir contains unexpected or partial entries")
         if manifest.exists():
+            if document_migration is not None:
+                raise WorkspaceError("document migration only initializes a new workspace")
             payload = _load_manifest(root)
         elif any(path.exists() or path.is_symlink() for path in persistent_entries):
             raise WorkspaceError("state-dir is partially initialized")
         else:
-            if catalog is None or wiki_root is None:
-                raise WorkspaceError("first state-dir start requires catalog and wiki-root")
-            payload = _initialise(root, catalog, wiki_root)
+            if document_migration is not None:
+                from .migrated_documents import bootstrap_migrated_documents
+                try:
+                    bootstrap_migrated_documents(document_migration, root)
+                except Exception as error:
+                    raise WorkspaceError(str(error)) from error
+                payload = _load_manifest(root)
+            else:
+                if catalog is None or wiki_root is None:
+                    raise WorkspaceError("first state-dir start requires catalog and wiki-root")
+                payload = _initialise(root, catalog, wiki_root)
         return PersistentWorkspace(root, lock_fd, payload)
     except Exception:
         os.close(lock_fd)

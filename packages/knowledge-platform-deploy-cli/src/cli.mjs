@@ -47,7 +47,7 @@ function parseArgs(argv) {
     }
     const value = inline ?? argv[++index];
     if (value === undefined || value.startsWith("--")) throw new PlatformCliError(`missing value for --${rawName}`, { code: "argument_error" });
-    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "index_config", "package_ref", "output_ref", "package_id", "package_version", "collections", "idempotency_key", "space_id", "collection_id", "collection_version", "capability", "provider_id"].includes(name)) {
+    if (!["home", "runtime_bundle", "package", "source", "target", "output", "backup", "migration_manifest", "catalog", "wiki_root", "document_migration", "port", "database_config", "structured_config", "state_dir", "wiki_config", "capture_config", "feishu_config", "file_config", "package_config", "index_config", "package_ref", "output_ref", "package_id", "package_version", "collections", "idempotency_key", "space_id", "collection_id", "collection_version", "capability", "provider_id"].includes(name)) {
       throw new PlatformCliError(`unknown option: --${rawName}`, { code: "argument_error" });
     }
     flags[name] = value;
@@ -61,6 +61,7 @@ function usage() {
     "",
     "  knowledge-platform install [--home <absolute-path>] [--apply] [--json]",
     "  knowledge-platform start --catalog <absolute-path> --wiki-root <absolute-path> --port <port> [--file-config <absolute-path>] [--apply] [--json]",
+    "  knowledge-platform start --state-dir <absolute-path> [--document-migration <absolute-candidate>] --port <port> [--apply] [--json]",
     "  knowledge-platform import --package-ref <host-binding> --idempotency-key <key> --apply [--json]",
     "  knowledge-platform export --output-ref <host-binding> --package-id <id> --package-version <version> --collections <json> --apply [--json]",
     "  knowledge-platform index --space-id <id> --collection-id <id> --collection-version <version> --capability <name> --provider-id <id> --idempotency-key <key> --apply [--json]",

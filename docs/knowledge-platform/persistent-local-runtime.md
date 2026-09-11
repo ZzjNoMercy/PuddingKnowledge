@@ -530,3 +530,37 @@ those provider rebuild/activation paths, general `index` execution, package
 revision replacement, orphan-object cleanup and stateful upgrade/rollback
 remain separate unfinished work. A Package is a portable knowledge artifact,
 not a backup of runtime jobs, sessions or credentials.
+
+## Offline migrated documents
+
+A completed `knowledge_platform.distribution.document_migration` candidate can
+bootstrap a **new** persistent local workspace without Wiki input:
+
+```sh
+python -m knowledge_platform.local \
+  --document-migration /absolute/verified-candidate \
+  --state-dir /absolute/new-owned-state \
+  --temp-dir /absolute/new-run-temp \
+  --ready-file /absolute/new-ready.json --port 19091
+```
+
+The runtime verifies the candidate and copies its Catalog and document bodies
+into owned state. It registers an explicit `knowledge_migrated_documents`
+collection provider. REST Asset reads, document retrieval, `knowledge_query`,
+and MCP use that owned state. Queries are limited to the selected collection's
+asset IDs. No embedding service or model call is required for lexical retrieval.
+
+After stopping, restart with the same `--state-dir`, a new `--temp-dir` and
+`--ready-file`, and omit `--document-migration`. Original migration inputs and
+the candidate may be moved away. This is bootstrap, not merge into an existing
+workspace; incomplete initialization fails closed.
+
+The installed supervisor also accepts these arguments through
+`knowledge-platform start --state-dir /absolute/new-owned-state
+--document-migration /absolute/verified-candidate --port 19091 --apply`.
+On restart omit the candidate argument. The installed runtime must contain this
+version of the workspace code. Existing Catalog/Wiki initialization is unchanged.
+
+This local acceptance does not perform installation CUTOVER, fence the original
+application, rebind credentials, or establish complete installation rollback.
+`activation_allowed` remains false.

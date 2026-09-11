@@ -60,6 +60,7 @@ def _build_app(
     packages: Any | None = None,
     package_config: dict | None = None,
     index_config: dict | None = None,
+    document_bindings: dict[str, Path] | None = None,
 ):
     catalog = CatalogQueryService(repository)
     structured_paths = dict(getattr(getattr(table_query, '_provider', None), 'paths', {}))
@@ -107,6 +108,10 @@ def _build_app(
         document_provider=FileIndexProvider(repository,files)
         if packages is not None:
             document_provider = _CombinedWikiProvider(document_provider, PackageRetrievalProvider(packages, repository))
+    if document_bindings:
+        from knowledge_platform.retrieval.local import LocalDocumentRetrievalProvider
+        document_provider = _CombinedWikiProvider(document_provider,
+            LocalDocumentRetrievalProvider(catalog=repository, asset_paths=document_bindings))
     vector_index = None
     if index_config is not None:
         from knowledge_platform.local.index_config import embedding_client, vector_storage, ranking_client
@@ -120,6 +125,9 @@ def _build_app(
     engines = dict(build_local_query_engines(wiki=wiki, table=table_query, database_nl2sql=database_nl2sql,
         document=document if files is not None else None,
         document_provider_id='knowledge_local_files' if files is not None else None))
+    if document_bindings:
+        engines["document_rag_query"] = _MigratedDocumentQueryEngine(
+            repository, document_bindings, engines.get("document_rag_query"))
     if packages is not None:
         for capability in ("wiki_query", "document_rag_query"):
             engines[capability] = _PackageQueryEngine(capability, packages, repository, engines.get(capability))
@@ -212,6 +220,30 @@ class _CombinedWikiProvider:
         initial = await self.initial.search(query=query, space_id=space_id, limit=limit)
         seen = {item.asset_id for item in current}
         return (current + tuple(item for item in initial if item.asset_id not in seen))[:limit]
+
+
+class _MigratedDocumentQueryEngine:
+    """Limit migrated document reads to this explicitly bound collection."""
+    def __init__(self, repository, bindings, fallback):
+        self.repository, self.bindings, self.fallback = repository, dict(bindings), fallback
+
+    async def query(self, *, request, collection, principal, correlation):
+        from knowledge_contracts import QueryError, QueryErrorCode, QueryResult
+        if collection.provider_bindings.get("document_rag_query") == {"provider_id": "knowledge_migrated_documents"}:
+            from knowledge_platform.retrieval.local import LocalDocumentRetrievalProvider
+            from knowledge_platform.router.local import LocalServiceQueryEngine
+            paths = {key: self.bindings[key] for key in collection.asset_ids if key in self.bindings}
+            if len(paths) != len(collection.asset_ids) or not paths:
+                return QueryResult(status="error", trace_id=correlation.trace_id,
+                    error=QueryError(code=QueryErrorCode.BINDING_UNAVAILABLE, message="Migrated document binding is unavailable"))
+            provider = LocalDocumentRetrievalProvider(catalog=self.repository, asset_paths=paths)
+            engine = LocalServiceQueryEngine(capability="document_rag_query",
+                service=DocumentRetrievalService(provider, self.repository), provider_id="knowledge_migrated_documents")
+            return await engine.query(request=request, collection=collection, principal=principal, correlation=correlation)
+        if self.fallback is not None:
+            return await self.fallback.query(request=request, collection=collection, principal=principal, correlation=correlation)
+        return QueryResult(status="error", trace_id=correlation.trace_id,
+            error=QueryError(code=QueryErrorCode.BINDING_UNAVAILABLE, message="Collection provider binding is unavailable"))
 
 
 class _PackageQueryEngine:
