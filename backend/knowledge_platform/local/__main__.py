@@ -79,8 +79,8 @@ def main() -> int:
         parser.error("--catalog and --wiki-root are required without --state-dir")
     if args.document_migration and (args.state_dir is None or args.catalog or args.wiki_root):
         parser.error("--document-migration requires --state-dir and cannot accompany Catalog/Wiki inputs")
-    if args.wiki_archive and (args.state_dir is None or args.catalog or args.wiki_root or args.document_migration):
-        parser.error("--wiki-archive requires a new --state-dir without other migration inputs")
+    if args.wiki_archive and (args.state_dir is None or args.catalog or args.wiki_root):
+        parser.error("--wiki-archive requires a new --state-dir without Catalog/Wiki inputs")
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")
     if args.instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", args.instance_id):

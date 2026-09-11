@@ -90,3 +90,29 @@ Initialization is for a new workspace only. It cannot yet merge with an existing
 document workspace. A partial initialization retains its marker and fails closed.
 This mode provides a query projection; schema/compiler compatibility and complete
 installation migration remain unverified and activation remains disabled.
+
+## Documents and Wiki in one new workspace
+
+Provide both verified inputs to initialize one Catalog and one local service:
+
+```sh
+python -m knowledge_platform.local \
+  --document-migration /absolute/migration/candidate \
+  --wiki-archive /absolute/migration/wiki \
+  --state-dir /absolute/knowledge/combined-state \
+  --temp-dir /absolute/new/unused-temp \
+  --ready-file /absolute/new/combined-ready.json --port 18882
+```
+
+The combined workspace retains both domain manifests, document blobs and the
+complete Wiki archive. It merges only Wiki Spaces, Assets and Collections into
+the owned document Catalog, rejecting identities that collide and incompatible
+schemas or unsupported nonempty Wiki tables. It never overwrites existing rows.
+On restart both domains validate against the same Catalog and their owned files;
+input migration directories are no longer required. Queries retain their own
+Space and capability boundaries.
+
+This initializes a new workspace; it does not merge into an existing active
+workspace. An interrupted initialization remains explicitly incomplete. This
+step does not prove cross-store source consistency, compiler/schema compatibility,
+writer cutover or complete installation rollback.

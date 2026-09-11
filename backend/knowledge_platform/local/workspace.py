@@ -206,6 +206,12 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
     manifest = _read_json(state_dir / _MANIFEST, label="state-dir manifest")
     if manifest.get("owner") != "puddingknowledge-local" or type(manifest.get("version")) is not int:
         raise WorkspaceError("state-dir manifest is invalid")
+    if manifest.get("version") == 4 and manifest.get("kind") == "migrated_knowledge":
+        from .combined_workspace import load_combined_workspace
+        try:
+            return load_combined_workspace(state_dir, manifest)
+        except (ValueError, OSError, RuntimeError) as error:
+            raise WorkspaceError(str(error)) from error
     if manifest.get("version") == 3 and manifest.get("kind") == "migrated_wiki":
         from .migrated_wiki import load_migrated_wiki_workspace
         try:
@@ -293,7 +299,7 @@ def open_persistent_workspace(
 ) -> PersistentWorkspace:
     """Open or atomically initialize a persistent owned workspace."""
 
-    if wiki_archive is not None and any(v is not None for v in (catalog, wiki_root, document_migration)):
+    if wiki_archive is not None and any(v is not None for v in (catalog, wiki_root)):
         raise WorkspaceError("Wiki archive requires its own new workspace")
     if document_migration is not None and (catalog is not None or wiki_root is not None):
         raise WorkspaceError("document migration cannot accompany Catalog/Wiki inputs")
@@ -327,7 +333,14 @@ def open_persistent_workspace(
         elif any(path.exists() or path.is_symlink() for path in persistent_entries):
             raise WorkspaceError("state-dir is partially initialized")
         else:
-            if wiki_archive is not None:
+            if wiki_archive is not None and document_migration is not None:
+                from .combined_workspace import bootstrap_combined_workspace
+                try:
+                    bootstrap_combined_workspace(document_migration, wiki_archive, root)
+                except Exception as error:
+                    raise WorkspaceError(str(error)) from error
+                payload = _load_manifest(root)
+            elif wiki_archive is not None:
                 from .migrated_wiki import bootstrap_migrated_wiki
                 try:
                     bootstrap_migrated_wiki(wiki_archive, root)

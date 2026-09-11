@@ -145,7 +145,7 @@ def _bindings(manifest: dict, root: Path) -> dict[str, Path]:
     return result
 
 
-def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializing_ok: bool = False) -> dict:
+def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializing_ok: bool = False, _combined: bool = False) -> dict:
     root = _real(root)
     if not root.is_dir() or root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
         raise MigratedWikiWorkspaceError("workspace root must be owned and private")
@@ -153,6 +153,7 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
     if set(manifest) != required or manifest.get("version") != 3 or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
         raise MigratedWikiWorkspaceError("migrated Wiki workspace manifest is invalid")
     allowed = {".workspace.lock", "workspace.json", ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal", "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal", "processing", "wiki-evidence"}
+    if _combined: allowed.add("blobs")
     if any(entry.name not in allowed for entry in root.iterdir()):
         raise MigratedWikiWorkspaceError("state-dir contains unexpected entries")
     if (root / ".initializing").exists() or (root / ".initializing").is_symlink():
