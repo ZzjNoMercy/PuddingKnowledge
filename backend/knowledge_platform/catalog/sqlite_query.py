@@ -367,9 +367,15 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         ) or {}
         return collection
 
+    def _asset_columns(self, connection):
+        columns = "id, space_id, kind, title, description, mime_type, source_type, source_uri, revision, content_digest"
+        if self._has_column(connection, "knowledge_assets", "metadata_json"):
+            columns += ", CASE WHEN kind='raw_snapshot' AND source_type='local_wiki_raw' THEN metadata_json ELSE NULL END AS wiki_metadata"
+        return columns
+
     @staticmethod
     def _asset(row: sqlite3.Row) -> dict[str, Any]:
-        return {
+        result = {
             "id": str(row["id"]),
             "space_id": str(row["space_id"]),
             "kind": str(row["kind"]),
@@ -381,6 +387,12 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
             "revision": str(row["revision"]),
             "content_digest": str(row["content_digest"]),
         }
+        if "wiki_metadata" in row.keys() and row["wiki_metadata"] is not None:
+            from .wiki_lineage import public_wiki_lineage
+            lineage = public_wiki_lineage(json.loads(row["wiki_metadata"]))
+            if lineage is not None:
+                result["wiki_lineage"] = lineage
+        return result
 
     def list_collections(self, *, space_id: str | None = None) -> list[dict[str, Any]]:
         connection = self._connect()
@@ -467,8 +479,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         connection = self._connect()
         try:
             query = (
-                "SELECT id, space_id, kind, title, description, mime_type, source_type, source_uri, revision, content_digest "
-                "FROM knowledge_assets WHERE (lower(title) LIKE ? ESCAPE '\\' OR lower(description) LIKE ? ESCAPE '\\')"
+                "SELECT " + self._asset_columns(connection) + " FROM knowledge_assets WHERE (lower(title) LIKE ? ESCAPE '\\' OR lower(description) LIKE ? ESCAPE '\\')"
             )
             escaped = text.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             pattern = f"%{escaped}%"
@@ -486,8 +497,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         connection = self._connect()
         try:
             query = (
-                "SELECT id, space_id, kind, title, description, mime_type, source_type, source_uri, revision, content_digest "
-                "FROM knowledge_assets"
+                "SELECT " + self._asset_columns(connection) + " FROM knowledge_assets"
             )
             parameters: tuple[Any, ...] = ()
             if space_id is not None:
@@ -520,8 +530,7 @@ class SqliteCatalogQueryRepository(CatalogQueryRepository):
         connection = self._connect()
         try:
             row = connection.execute(
-                "SELECT id, space_id, kind, title, description, mime_type, source_type, source_uri, revision, content_digest "
-                "FROM knowledge_assets WHERE id = ?",
+                "SELECT " + self._asset_columns(connection) + " FROM knowledge_assets WHERE id = ?",
                 (asset_id,),
             ).fetchone()
             return self._asset(row) if row is not None else None

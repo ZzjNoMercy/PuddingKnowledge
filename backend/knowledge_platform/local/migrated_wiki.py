@@ -19,6 +19,7 @@ from knowledge_platform.catalog import migrate_to_latest
 from knowledge_platform.distribution import wiki_archive
 from .catalog import _materialize_catalog
 from .wiki_raw import project_raw_assets
+from .wiki_lineage import project_wiki_lineage
 
 
 class MigratedWikiWorkspaceError(RuntimeError):
@@ -146,7 +147,7 @@ def _bindings(manifest: dict, root: Path) -> dict[str, Path]:
             raise MigratedWikiWorkspaceError("Wiki file binding is invalid")
         path = _real(root / relative)
         allowed_roots = [evidence / "archive" / "wiki"]
-        if manifest["version"] == 5: allowed_roots.append(evidence / "archive" / "raw")
+        if manifest["version"] in (5, 6): allowed_roots.append(evidence / "archive" / "raw")
         if not any(path.is_relative_to(parent) for parent in allowed_roots) or path.is_symlink() or not path.is_file():
             raise MigratedWikiWorkspaceError("Wiki file binding escaped owned evidence")
         result[asset_id] = path
@@ -158,7 +159,7 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
     if not root.is_dir() or root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
         raise MigratedWikiWorkspaceError("workspace root must be owned and private")
     required = {"version", "owner", "kind", "catalog", "evidence_root", "provider_id", "space_id", "collection_id", "collection_version", "archive_manifest_digest", "file_bindings", "facts", "pages", "activation_allowed"}
-    if set(manifest) != required or type(manifest.get("version")) is not int or manifest.get("version") not in (3, 5) or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
+    if set(manifest) != required or type(manifest.get("version")) is not int or manifest.get("version") not in (3, 5, 6) or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
         raise MigratedWikiWorkspaceError("migrated Wiki workspace manifest is invalid")
     allowed = {".workspace.lock", "workspace.json", ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal", "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal", "processing", "wiki-evidence"}
     if _combined: allowed.add("blobs")
@@ -213,14 +214,18 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
             "metadata": {"published": True, "wiki_slug": slug, "bytes": fact["size_bytes"]}}
     page_ids = set(expected_assets)
     raw_projection = {"assets": {}, "file_bindings": {}}
-    if manifest["version"] == 5:
+    if manifest["version"] in (5, 6):
         raw_projection = project_raw_assets(evidence, archive_manifest, expected_space)
+        if manifest["version"] == 6:
+            lineage = project_wiki_lineage(evidence, archive_manifest, raw_projection["assets"])
+            for asset_id, metadata in lineage.items():
+                raw_projection["assets"][asset_id]["metadata"].update(metadata)
         expected_assets.update(raw_projection["assets"])
         expected_bindings.update(raw_projection["file_bindings"])
     if manifest["file_bindings"] != expected_bindings or type(manifest["pages"]) is not int or manifest["pages"] != len(page_ids):
         raise MigratedWikiWorkspaceError("Wiki bindings or page count disagree with archive")
     bindings = _bindings(manifest, root)
-    facts = _catalog_facts(catalog, manifest["space_id"], manifest["collection_id"], manifest["collection_version"], include_raw=manifest["version"] == 5)
+    facts = _catalog_facts(catalog, manifest["space_id"], manifest["collection_id"], manifest["collection_version"], include_raw=manifest["version"] in (5, 6))
     if json.dumps(facts, sort_keys=True) != json.dumps(manifest["facts"], sort_keys=True):
         raise MigratedWikiWorkspaceError("owned Wiki Catalog facts changed")
     collection = facts["collection"]
@@ -285,6 +290,9 @@ def bootstrap_migrated_wiki(candidate: Path | str, state_dir: Path | str) -> dic
             staged_catalog = staging / "catalog.sqlite3"
             wiki_root = archive_root / "wiki"
             raw_projection = project_raw_assets(evidence, archive_manifest, space_id)
+            lineage = project_wiki_lineage(evidence, archive_manifest, raw_projection["assets"])
+            for asset_id, metadata in lineage.items():
+                raw_projection["assets"][asset_id]["metadata"].update(metadata)
             materialized = _materialize_catalog(base, staged_catalog, wiki_root, space_id=space_id, collection_id=collection_id, allow_empty=bool(raw_projection["assets"]))
             os.chmod(staged_catalog, 0o600)
             with sqlite3.connect(staged_catalog) as db:
@@ -300,7 +308,7 @@ def bootstrap_migrated_wiki(candidate: Path | str, state_dir: Path | str) -> dic
             facts = _catalog_facts(staged_catalog, space_id, collection_id, collection_version, include_raw=True)
             bindings = {asset_id: (Path("wiki-evidence") / "archive" / "wiki" / path.relative_to(wiki_root)).as_posix() for asset_id, path in materialized["file_bindings"].items()}
             bindings.update(raw_projection["file_bindings"])
-            owned = {"version": 5, "owner": "puddingknowledge-local", "kind": "migrated_wiki", "catalog": "catalog.sqlite3", "evidence_root": "wiki-evidence", "provider_id": _PROVIDER, "space_id": space_id, "collection_id": collection_id, "collection_version": collection_version, "archive_manifest_digest": _digest(manifest_bytes), "file_bindings": bindings, "facts": facts, "pages": materialized["pages"], "activation_allowed": False}
+            owned = {"version": 6, "owner": "puddingknowledge-local", "kind": "migrated_wiki", "catalog": "catalog.sqlite3", "evidence_root": "wiki-evidence", "provider_id": _PROVIDER, "space_id": space_id, "collection_id": collection_id, "collection_version": collection_version, "archive_manifest_digest": _digest(manifest_bytes), "file_bindings": bindings, "facts": facts, "pages": materialized["pages"], "activation_allowed": False}
             _write(staging / "workspace.json", json.dumps(owned, sort_keys=True, separators=(",", ":")).encode())
             os.replace(staged_catalog, root / "catalog.sqlite3")
             os.replace(evidence, root / "wiki-evidence")

@@ -189,7 +189,7 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
     dm, wm = manifest["document_manifest"], manifest["wiki_manifest"]
     if not isinstance(dm, dict) or not isinstance(wm, dict):
         raise CombinedWorkspaceError("nested workspace manifests are invalid")
-    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5)))):
+    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5, 6)))):
         raise CombinedWorkspaceError("nested Catalog binding is invalid")
     try:
         documents = load_migrated_workspace(root, dm)
