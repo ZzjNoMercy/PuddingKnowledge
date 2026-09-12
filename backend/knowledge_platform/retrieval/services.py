@@ -621,6 +621,7 @@ class _ProviderQueryService:
         query: str,
         space_id: str | None = None,
         limit: int = 20,
+        _asset_ids: frozenset[str] | None = None,
     ) -> QueryResult:
         if not _authorized_for_space(principal, space_id, operation="search"):
             return _error(correlation, QueryErrorCode.PERMISSION_DENIED, "knowledge.search scope is required")
@@ -639,8 +640,9 @@ class _ProviderQueryService:
         if revision_before is None:
             return _error(correlation, QueryErrorCode.BINDING_UNAVAILABLE, "Catalog revision is unavailable")
         try:
-            candidates = tuple(await self._provider.search(query=query, space_id=space_id, limit=limit))
-            if len(candidates) > limit:
+            search_limit = _MAX_RETRIEVAL_LIMIT if _asset_ids is not None else limit
+            candidates = tuple(await self._provider.search(query=query, space_id=space_id, limit=search_limit))
+            if len(candidates) > search_limit:
                 raise ValueError("provider returned more candidates than requested")
             catalog_assets: dict[str, Mapping[str, object]] = {}
             for candidate in candidates:
@@ -661,6 +663,8 @@ class _ProviderQueryService:
                 ):
                     raise ValueError("provider returned an Asset not bound to Catalog")
                 catalog_assets[candidate.asset_id] = asset
+            if _asset_ids is not None:
+                candidates = tuple(item for item in candidates if item.asset_id in _asset_ids)[:limit]
             normalized = self._normalizer.normalize(candidates, max_items=limit)
             if len(normalized) > limit:
                 raise ValueError("normalizer returned more evidence than requested")
@@ -723,3 +727,7 @@ class WikiQueryService(_ProviderQueryService):
 
     def __init__(self, provider: RetrievalProvider, catalog: CatalogQueryRepository, normalizer: CitationNormalizer | None = None) -> None:
         super().__init__(provider=provider, catalog=catalog, normalizer=normalizer, capability="wiki_query")
+
+    async def query_collection(self, *, asset_ids, **kwargs):
+        """Restrict bounded provider results to the router-selected Collection."""
+        return await self.query(_asset_ids=frozenset(asset_ids), **kwargs)

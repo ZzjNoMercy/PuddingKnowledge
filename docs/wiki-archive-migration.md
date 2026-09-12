@@ -116,3 +116,26 @@ This initializes a new workspace; it does not merge into an existing active
 workspace. An interrupted initialization remains explicitly incomplete. This
 step does not prove cross-store source consistency, compiler/schema compatibility,
 writer cutover or complete installation rollback.
+
+## Compile and publish in the owned Space
+
+Wiki service configuration v2 retains the v1 JSON fields (`version`, `space_id`,
+`assets`, `model`) and accepts any valid Space that exists in the target Catalog.
+Bind `assets` explicitly to owned workspace files; credentials remain environment
+references in the model configuration. V1 retains its default-Space restriction.
+
+With `--wiki-config`, v2 publishes the new Asset, its durable compilation receipt
+and membership in a dedicated compiled-Wiki Collection in one SQLite transaction.
+Existing Collection ownership mismatches reject the publication. Migration-page
+validation continues to protect the original archive projection while allowing
+new compiled Assets in the same Space. Processing directories are private.
+
+The dedicated Collection can be selected with `collection_id` in `/v1/query`.
+Routed Wiki results are restricted to that Collection's Asset IDs. Retrieval uses
+bounded provider candidates; it does not promise exhaustive matching over every
+page. Same-key replay after restart reuses the committed publication.
+
+This proves independent target compilation mechanics, not compatibility with
+legacy schema packs, old compilation receipts or every Raw consumption/retirement
+rule. The installed acceptance uses a local deterministic HTTP model fixture;
+it does not establish external model quality or production activation.

@@ -123,8 +123,11 @@ def _catalog_facts(catalog: Path, space_id: str, collection_id: str, version: st
         if not isinstance(asset_ids, list) or not all(isinstance(item, str) for item in asset_ids) or not isinstance(capabilities, list):
             raise MigratedWikiWorkspaceError("Wiki Collection metadata is invalid")
         assets = {}
-        for row in db.execute("SELECT id,space_id,kind,source_type,source_uri,revision,content_digest,metadata_json FROM knowledge_assets WHERE space_id=? ORDER BY id", (space_id,)):
-            metadata = json.loads(row["metadata_json"])
+        for row in db.execute("SELECT id,space_id,kind,source_type,source_uri,revision,content_digest,metadata_json FROM knowledge_assets WHERE space_id=? AND source_type='local_published_wiki' ORDER BY id", (space_id,)):
+            try:
+                metadata = json.loads(row["metadata_json"])
+            except (ValueError, TypeError) as error:
+                raise MigratedWikiWorkspaceError("Wiki Asset metadata is invalid") from error
             assets[row["id"]] = {"space_id": row["space_id"], "kind": row["kind"], "source_type": row["source_type"], "source_uri": row["source_uri"], "revision": row["revision"], "content_digest": row["content_digest"], "metadata": metadata}
         return {"space_id": space_id, "collection": {"id": collection["id"], "space_id": collection["space_id"], "version": collection["version"], "manifest_digest": collection["manifest_digest"], "capabilities": capabilities, "asset_ids": asset_ids}, "assets": assets}
 

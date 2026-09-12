@@ -55,6 +55,10 @@ class LocalServiceQueryEngine(KnowledgeQueryEngine):
                 limit=request.limit,
             )
         if self._capability == "wiki_query":
+            if hasattr(self._service, "query_collection"):
+                return await self._service.query_collection(asset_ids=collection.asset_ids,
+                    principal=principal, correlation=correlation, query=request.query,
+                    space_id=collection.space_id, limit=request.limit)
             return await self._service.query(
                 principal=principal,
                 correlation=correlation,

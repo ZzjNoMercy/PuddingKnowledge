@@ -84,8 +84,12 @@ def _safe_state_root(path: Path) -> Path:
             raise OSError("Wiki state path contains a symlink")
     if path.exists() and path.is_symlink():
         raise OSError("Wiki state root must not be a symlink")
-    path.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or not path.is_dir():
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor); cursor = cursor.parent
+    for directory in reversed(missing): directory.mkdir(mode=0o700)
+    if path.is_symlink() or not path.is_dir() or path.stat().st_mode & 0o077:
         raise OSError("Wiki state root is not a directory")
     return path
 
@@ -133,10 +137,10 @@ def load_wiki_config(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("Wiki configuration is invalid") from error
     if (not isinstance(value, dict) or set(value) != {"version", "space_id", "assets", "model"}
-            or type(value.get("version")) is not int or value.get("version") != 1):
-        raise ValueError("Wiki configuration version must be 1")
-    if value.get("space_id") != "space_kb_default":
-        raise ValueError("Wiki configuration Space must be space_kb_default")
+            or type(value.get("version")) is not int or value.get("version") not in (1, 2)):
+        raise ValueError("Wiki configuration version must be 1 or 2")
+    if not isinstance(value.get("space_id"), str) or not _ID_RE.fullmatch(value["space_id"]) or (value["version"] == 1 and value["space_id"] != "space_kb_default"):
+        raise ValueError("Wiki configuration Space is invalid")
     assets = value.get("assets")
     if not isinstance(assets, dict):
         raise ValueError("Wiki configuration assets are required")
@@ -166,7 +170,7 @@ def load_wiki_config(path: Path) -> dict[str, Any]:
     # named environment variable; it is never accepted in this file.
     if any(key.lower() in {"api_key", "token", "secret", "password"} for key in model):
         raise ValueError("Wiki model configuration must use api_key_env")
-    return {"version": 1, "space_id": "space_kb_default", "assets": normalized_assets, "model": dict(model)}
+    return {"version": value["version"], "space_id": value["space_id"], "assets": normalized_assets, "model": dict(model)}
 
 
 class _ConfiguredRawSnapshotRepository:
@@ -247,7 +251,8 @@ class _ConfiguredRawSnapshotRepository:
 class _PersistentWikiStore:
     """Durable claim/publication store with a crash-releasable per-key lock."""
 
-    def __init__(self, *, database_path: Path, state_root: Path, space_id: str) -> None:
+    def __init__(self, *, database_path: Path, state_root: Path, space_id: str, publish_collection: bool = False) -> None:
+        self.publish_collection = publish_collection
         self.database_path = _safe_database(database_path)
         self.state_root = _safe_state_root(state_root)
         self.space_id = space_id
@@ -463,6 +468,8 @@ class _PersistentWikiStore:
                 published_digest,
             ):
                 raise ValueError("Wiki publication Asset is already owned by another page")
+            if self.publish_collection:
+                self._publish_collection(connection, output_id)
             connection.execute(
                 f"""UPDATE {_TABLE}
                    SET status = 'succeeded', resource_uri = ?, markdown = ?,
@@ -471,6 +478,31 @@ class _PersistentWikiStore:
                 (resource_uri, sqlite3.Binary(markdown), draft.receipt_id, _now(), key_digest),
             )
         return resource_uri
+
+    def _publish_collection(self, connection, output_id):
+        collection_id = "collection_compiled_wiki_" + hashlib.sha256(self.space_id.encode()).hexdigest()[:32]
+        row = connection.execute("SELECT space_id,version,kind,asset_ids,capabilities,description,semantic_asset_ids,permissions_json,manifest_digest FROM knowledge_datasets WHERE id=?", (collection_id,)).fetchone()
+        now = _now()
+        freshness = json.dumps({"capability": "wiki_query", "mode": "local_wiki_compilation", "observed_at": now, "source_revision": output_id, "state": "ready"})
+        if row is None:
+            connection.execute("""INSERT INTO knowledge_datasets
+                (id,space_id,name,version,kind,description,asset_ids,semantic_asset_ids,capabilities,freshness,permissions_json,manifest_digest,created_at,updated_at)
+                VALUES(?,?,?,'1','wiki','local_wiki_compilation/v1',?,'[]','["wiki_query"]',?,'{}','',?,?)""",
+                (collection_id,self.space_id,"Compiled Wiki " + self.space_id,json.dumps([output_id]),freshness,now,now))
+        else:
+            ids = json.loads(row["asset_ids"])
+            if (row["space_id"] != self.space_id or row["version"] != "1" or row["kind"] != "wiki"
+                    or row["description"] != "local_wiki_compilation/v1" or row["semantic_asset_ids"] != "[]" or row["permissions_json"] != "{}" or row["manifest_digest"] != ""
+                    or json.loads(row["capabilities"]) != ["wiki_query"] or not isinstance(ids,list)
+                    or any(not isinstance(i,str) for i in ids) or len(set(ids)) != len(ids)):
+                raise ValueError("Compiled Wiki Collection is owned by another source")
+            for asset_id in ids:
+                asset = connection.execute("SELECT space_id,source_type,kind,source_uri FROM knowledge_assets WHERE id=?",(asset_id,)).fetchone()
+                if asset is None or tuple(asset) != (self.space_id,"local_wiki_compilation","wiki_page",f"knowledge://spaces/{self.space_id}/assets/{asset_id}"):
+                    raise ValueError("Compiled Wiki Collection contains another source")
+            if output_id not in ids: ids.append(output_id)
+            connection.execute("UPDATE knowledge_datasets SET asset_ids=?,freshness=?,updated_at=? WHERE id=?",
+                (json.dumps(ids),freshness,now,collection_id))
 
     def bindings(self) -> dict[str, bytes]:
         with self._connect() as connection:
@@ -528,10 +560,10 @@ def build_wiki_services(
 ) -> WikiServices:
     """Build the durable Wiki worker and dynamic publication reader."""
 
-    if not isinstance(config, Mapping) or config.get("version") != 1:
-        raise ValueError("Wiki configuration version must be 1")
-    if config.get("space_id") != "space_kb_default":
-        raise ValueError("Wiki configuration Space must be space_kb_default")
+    if not isinstance(config, Mapping) or type(config.get("version")) is not int or config.get("version") not in (1, 2):
+        raise ValueError("Wiki configuration version must be 1 or 2")
+    if not isinstance(config.get("space_id"), str) or not _ID_RE.fullmatch(config["space_id"]) or (config["version"] == 1 and config["space_id"] != "space_kb_default"):
+        raise ValueError("Wiki configuration Space is invalid")
     assets = config.get("assets")
     model_config = config.get("model")
     if not isinstance(assets, Mapping) or not isinstance(model_config, Mapping):
@@ -540,9 +572,13 @@ def build_wiki_services(
     # does not make ordinary local query startup import an optional SDK.
     from knowledge_platform.local.wiki_model import HttpWikiModelGateway
 
-    store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id="space_kb_default")
+    if config["version"] == 2:
+        with sqlite3.connect(catalog_path) as connection:
+            if connection.execute("SELECT id FROM knowledge_spaces WHERE id=?", (config["space_id"],)).fetchone() is None:
+                raise ValueError("Configured Wiki Space is absent from Catalog")
+    store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id=config["space_id"], publish_collection=config["version"] == 2)
     jobs = _WorkerJobAdapter(store)
-    snapshots = _ConfiguredRawSnapshotRepository(assets=assets, space_id="space_kb_default", catalog_path=catalog_path)
+    snapshots = _ConfiguredRawSnapshotRepository(assets=assets, space_id=config["space_id"], catalog_path=catalog_path)
     if feishu_sources is not None:
         from knowledge_platform.local.feishu import FeishuAndConfiguredSnapshots
         snapshots = FeishuAndConfiguredSnapshots(feishu_sources, snapshots)
