@@ -212,7 +212,7 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
             return load_combined_workspace(state_dir, manifest)
         except (ValueError, OSError, RuntimeError) as error:
             raise WorkspaceError(str(error)) from error
-    if manifest.get("version") == 3 and manifest.get("kind") == "migrated_wiki":
+    if manifest.get("version") in (3, 5) and manifest.get("kind") == "migrated_wiki":
         from .migrated_wiki import load_migrated_wiki_workspace
         try:
             return load_migrated_wiki_workspace(state_dir, manifest)

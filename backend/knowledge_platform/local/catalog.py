@@ -31,7 +31,7 @@ def _file_digest(path: Path) -> tuple[str, int]:
             size += len(chunk)
     return f"sha256:{digest.hexdigest()}", size
 
-def _safe_pages(root: Path) -> list[Path]:
+def _safe_pages(root: Path, *, allow_empty: bool = False) -> list[Path]:
     root = root.expanduser().absolute()
     cursor = root
     while True:
@@ -61,7 +61,7 @@ def _safe_pages(root: Path) -> list[Path]:
         if path.stat().st_size > _MAX_PAGE_BYTES:
             raise ValueError("published Wiki page exceeds the shadow size limit")
         pages.append(path)
-    if not pages:
+    if not pages and not allow_empty:
         raise ValueError("published Wiki root contains no pages")
     if len(pages) > _MAX_PAGES:
         raise ValueError("published Wiki page count exceeds the shadow limit")
@@ -113,7 +113,7 @@ def _snapshot_catalog(catalog_path: Path, temporary_catalog: Path) -> None:
         target.close()
         source.close()
 
-def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root: Path, *, space_id: str = _SPACE_ID, collection_id: str = _DATASET_ID) -> dict[str, Any]:
+def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root: Path, *, space_id: str = _SPACE_ID, collection_id: str = _DATASET_ID, allow_empty: bool = False) -> dict[str, Any]:
     if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", value)
            for value in (space_id, collection_id)):
         raise ValueError("Invalid local Wiki Space/Collection identity")
@@ -123,7 +123,7 @@ def _materialize_catalog(catalog_path: Path, temporary_catalog: Path, wiki_root:
     # root and fail before the actual boundary checks ran.
     wiki_root = wiki_root.expanduser().absolute()
     _snapshot_catalog(catalog_path, temporary_catalog)
-    pages = _safe_pages(wiki_root)
+    pages = _safe_pages(wiki_root, allow_empty=allow_empty)
     records: list[tuple[str, Path, str, int, str]] = []
     for page in pages:
         slug = page.relative_to(wiki_root).with_suffix("").as_posix()

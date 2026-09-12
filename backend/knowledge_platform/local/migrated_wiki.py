@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, text
 from knowledge_platform.catalog import migrate_to_latest
 from knowledge_platform.distribution import wiki_archive
 from .catalog import _materialize_catalog
+from .wiki_raw import project_raw_assets
 
 
 class MigratedWikiWorkspaceError(RuntimeError):
@@ -105,7 +106,7 @@ def _identity_ids(manifest: dict) -> tuple[str, str, str]:
     return f"space_wiki_{token}", f"collection_wiki_{token}", "1"
 
 
-def _catalog_facts(catalog: Path, space_id: str, collection_id: str, version: str) -> dict:
+def _catalog_facts(catalog: Path, space_id: str, collection_id: str, version: str, *, include_raw: bool = False) -> dict:
     uri = "file:" + quote(str(catalog), safe="/") + "?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as db:
         db.row_factory = sqlite3.Row
@@ -123,7 +124,9 @@ def _catalog_facts(catalog: Path, space_id: str, collection_id: str, version: st
         if not isinstance(asset_ids, list) or not all(isinstance(item, str) for item in asset_ids) or not isinstance(capabilities, list):
             raise MigratedWikiWorkspaceError("Wiki Collection metadata is invalid")
         assets = {}
-        for row in db.execute("SELECT id,space_id,kind,source_type,source_uri,revision,content_digest,metadata_json FROM knowledge_assets WHERE space_id=? AND source_type='local_published_wiki' ORDER BY id", (space_id,)):
+        source_types = ("local_published_wiki", "local_wiki_raw") if include_raw else ("local_published_wiki",)
+        placeholders = ",".join("?" for _ in source_types)
+        for row in db.execute(f"SELECT id,space_id,kind,source_type,source_uri,revision,content_digest,metadata_json FROM knowledge_assets WHERE space_id=? AND source_type IN ({placeholders}) ORDER BY id", (space_id, *source_types)):
             try:
                 metadata = json.loads(row["metadata_json"])
             except (ValueError, TypeError) as error:
@@ -142,7 +145,9 @@ def _bindings(manifest: dict, root: Path) -> dict[str, Path]:
         if not isinstance(asset_id, str) or not isinstance(relative, str):
             raise MigratedWikiWorkspaceError("Wiki file binding is invalid")
         path = _real(root / relative)
-        if not path.is_relative_to(evidence / "archive" / "wiki") or path.is_symlink() or not path.is_file():
+        allowed_roots = [evidence / "archive" / "wiki"]
+        if manifest["version"] == 5: allowed_roots.append(evidence / "archive" / "raw")
+        if not any(path.is_relative_to(parent) for parent in allowed_roots) or path.is_symlink() or not path.is_file():
             raise MigratedWikiWorkspaceError("Wiki file binding escaped owned evidence")
         result[asset_id] = path
     return result
@@ -153,7 +158,7 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
     if not root.is_dir() or root.stat().st_mode & 0o077 or root.stat().st_uid != os.getuid():
         raise MigratedWikiWorkspaceError("workspace root must be owned and private")
     required = {"version", "owner", "kind", "catalog", "evidence_root", "provider_id", "space_id", "collection_id", "collection_version", "archive_manifest_digest", "file_bindings", "facts", "pages", "activation_allowed"}
-    if set(manifest) != required or manifest.get("version") != 3 or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
+    if set(manifest) != required or type(manifest.get("version")) is not int or manifest.get("version") not in (3, 5) or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
         raise MigratedWikiWorkspaceError("migrated Wiki workspace manifest is invalid")
     allowed = {".workspace.lock", "workspace.json", ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal", "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal", "processing", "wiki-evidence"}
     if _combined: allowed.add("blobs")
@@ -206,15 +211,21 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
         expected_assets[asset_id] = {"space_id": expected_space, "kind": "wiki_page", "source_type": "local_published_wiki",
             "source_uri": f"knowledge://spaces/{expected_space}/assets/{asset_id}", "revision": digest, "content_digest": digest,
             "metadata": {"published": True, "wiki_slug": slug, "bytes": fact["size_bytes"]}}
-    if manifest["file_bindings"] != expected_bindings or type(manifest["pages"]) is not int or manifest["pages"] != len(expected_bindings):
+    page_ids = set(expected_assets)
+    raw_projection = {"assets": {}, "file_bindings": {}}
+    if manifest["version"] == 5:
+        raw_projection = project_raw_assets(evidence, archive_manifest, expected_space)
+        expected_assets.update(raw_projection["assets"])
+        expected_bindings.update(raw_projection["file_bindings"])
+    if manifest["file_bindings"] != expected_bindings or type(manifest["pages"]) is not int or manifest["pages"] != len(page_ids):
         raise MigratedWikiWorkspaceError("Wiki bindings or page count disagree with archive")
     bindings = _bindings(manifest, root)
-    facts = _catalog_facts(catalog, manifest["space_id"], manifest["collection_id"], manifest["collection_version"])
+    facts = _catalog_facts(catalog, manifest["space_id"], manifest["collection_id"], manifest["collection_version"], include_raw=manifest["version"] == 5)
     if json.dumps(facts, sort_keys=True) != json.dumps(manifest["facts"], sort_keys=True):
         raise MigratedWikiWorkspaceError("owned Wiki Catalog facts changed")
     collection = facts["collection"]
     if (json.dumps(facts["assets"], sort_keys=True) != json.dumps(expected_assets, sort_keys=True)
-            or len(collection["asset_ids"]) != len(expected_assets) or set(collection["asset_ids"]) != set(expected_assets)
+            or len(collection["asset_ids"]) != len(page_ids) or set(collection["asset_ids"]) != page_ids
             or collection["capabilities"] != ["wiki_query"] or collection["manifest_digest"] != manifest["archive_manifest_digest"]):
         raise MigratedWikiWorkspaceError("Catalog projection disagrees with verified Wiki archive")
     if set(bindings) != set(facts["assets"]):
@@ -223,7 +234,7 @@ def load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initializ
         expected = facts["assets"][asset_id]["content_digest"]
         if _digest(_read(path, wiki_archive.MAX_FILE)) != expected:
             raise MigratedWikiWorkspaceError("Wiki page digest changed")
-    return {"catalog": catalog, "wiki_root": evidence / "archive" / "wiki", "evidence_root": evidence, "file_bindings": bindings, "space_ids": [manifest["space_id"]], "pages": manifest["pages"], "space_id": manifest["space_id"], "collection_id": manifest["collection_id"], "collection_version": manifest["collection_version"], "provider_id": _PROVIDER, "activation_allowed": False}
+    return {"catalog": catalog, "wiki_root": evidence / "archive" / "wiki", "evidence_root": evidence, "file_bindings": bindings, "wiki_bindings": {key: bindings[key] for key in page_ids}, "raw_bindings": {key: bindings[key] for key in raw_projection["assets"]}, "space_ids": [manifest["space_id"]], "pages": manifest["pages"], "space_id": manifest["space_id"], "collection_id": manifest["collection_id"], "collection_version": manifest["collection_version"], "provider_id": _PROVIDER, "activation_allowed": False}
 
 
 def bootstrap_migrated_wiki(candidate: Path | str, state_dir: Path | str) -> dict:
@@ -273,11 +284,23 @@ def bootstrap_migrated_wiki(candidate: Path | str, state_dir: Path | str) -> dic
             engine.dispose()
             staged_catalog = staging / "catalog.sqlite3"
             wiki_root = archive_root / "wiki"
-            materialized = _materialize_catalog(base, staged_catalog, wiki_root, space_id=space_id, collection_id=collection_id)
+            raw_projection = project_raw_assets(evidence, archive_manifest, space_id)
+            materialized = _materialize_catalog(base, staged_catalog, wiki_root, space_id=space_id, collection_id=collection_id, allow_empty=bool(raw_projection["assets"]))
             os.chmod(staged_catalog, 0o600)
-            facts = _catalog_facts(staged_catalog, space_id, collection_id, collection_version)
+            with sqlite3.connect(staged_catalog) as db:
+                db.execute("PRAGMA foreign_keys=ON")
+                for asset_id, fact in raw_projection["assets"].items():
+                    db.execute("""INSERT INTO knowledge_assets
+                        (id,space_id,kind,title,description,mime_type,source_type,source_uri,revision,
+                         content_digest,permissions_json,metadata_json,created_at,updated_at)
+                        VALUES (?,?,?,?,'','application/octet-stream',?,?,?,?, '{}',?,?,?)""",
+                        (asset_id, space_id, fact["kind"], raw_projection["titles"][asset_id], fact["source_type"],
+                         fact["source_uri"], fact["revision"], fact["content_digest"],
+                         json.dumps(fact["metadata"], sort_keys=True), now, now))
+            facts = _catalog_facts(staged_catalog, space_id, collection_id, collection_version, include_raw=True)
             bindings = {asset_id: (Path("wiki-evidence") / "archive" / "wiki" / path.relative_to(wiki_root)).as_posix() for asset_id, path in materialized["file_bindings"].items()}
-            owned = {"version": 3, "owner": "puddingknowledge-local", "kind": "migrated_wiki", "catalog": "catalog.sqlite3", "evidence_root": "wiki-evidence", "provider_id": _PROVIDER, "space_id": space_id, "collection_id": collection_id, "collection_version": collection_version, "archive_manifest_digest": _digest(manifest_bytes), "file_bindings": bindings, "facts": facts, "pages": materialized["pages"], "activation_allowed": False}
+            bindings.update(raw_projection["file_bindings"])
+            owned = {"version": 5, "owner": "puddingknowledge-local", "kind": "migrated_wiki", "catalog": "catalog.sqlite3", "evidence_root": "wiki-evidence", "provider_id": _PROVIDER, "space_id": space_id, "collection_id": collection_id, "collection_version": collection_version, "archive_manifest_digest": _digest(manifest_bytes), "file_bindings": bindings, "facts": facts, "pages": materialized["pages"], "activation_allowed": False}
             _write(staging / "workspace.json", json.dumps(owned, sort_keys=True, separators=(",", ":")).encode())
             os.replace(staged_catalog, root / "catalog.sqlite3")
             os.replace(evidence, root / "wiki-evidence")

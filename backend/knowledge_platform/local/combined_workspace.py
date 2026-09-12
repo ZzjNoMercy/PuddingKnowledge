@@ -189,7 +189,7 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
     dm, wm = manifest["document_manifest"], manifest["wiki_manifest"]
     if not isinstance(dm, dict) or not isinstance(wm, dict):
         raise CombinedWorkspaceError("nested workspace manifests are invalid")
-    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] != version for value, version in ((dm, 2), (wm, 3))):
+    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5)))):
         raise CombinedWorkspaceError("nested Catalog binding is invalid")
     try:
         documents = load_migrated_workspace(root, dm)
@@ -200,4 +200,4 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
         raise CombinedWorkspaceError("document and Wiki bindings overlap")
     return {"catalog": root / "catalog.sqlite3", "file_bindings": {**documents["file_bindings"], **wiki["file_bindings"]},
             "document_bindings": documents["document_bindings"], "space_ids": sorted(set(documents["space_ids"]) | set(wiki["space_ids"])),
-            "pages": wiki["pages"], "wiki_bindings": wiki["file_bindings"], "activation_allowed": False}
+            "pages": wiki["pages"], "wiki_bindings": wiki["wiki_bindings"], "raw_bindings": wiki["raw_bindings"], "activation_allowed": False}

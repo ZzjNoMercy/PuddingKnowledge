@@ -17,7 +17,7 @@ def setup(tmp_path,monkeypatch):
     _install_fake_model(monkeypatch)
     document,wiki,_=_make(tmp_path);state=tmp_path/'state'
     with open_persistent_workspace(state,document_migration=document,wiki_archive=wiki) as owned:
-        asset=next(k for k in owned['file_bindings'] if k not in owned['document_bindings'])
+        asset=next(iter(owned['wiki_bindings']))
         source=owned['file_bindings'][asset]
         with sqlite3.connect(owned['catalog']) as db:space,revision=db.execute('SELECT space_id,revision FROM knowledge_assets WHERE id=?',(asset,)).fetchone()
     config={'version':2,'space_id':space,'assets':{asset:str(source)},'model':{'endpoint':'http://127.0.0.1:9999/v1/chat/completions','model':'fixture'}}

@@ -139,3 +139,12 @@ This proves independent target compilation mechanics, not compatibility with
 legacy schema packs, old compilation receipts or every Raw consumption/retirement
 rule. The installed acceptance uses a local deterministic HTTP model fixture;
 it does not establish external model quality or production activation.
+
+
+## Owned Raw Assets
+
+New Wiki workspace manifests use version 5. Each registered immutable Raw snapshot is also a `raw_snapshot` Catalog Asset, with an ID derived from Space and snapshot path and a revision bound to its bytes. The complete original manifest remains in owned archive evidence; Catalog metadata exposes portable source/asset identities, snapshot path, bundle hash and creation time, without publishing the original host source path. Registered Raw files can be read through the Asset API and selected in Wiki config v2 for compilation after migration inputs are disconnected. The current compiler accepts UTF-8 sources up to 8 MiB; archival/read preservation does not imply every binary or larger source can compile.
+
+Raw bindings are separate from published Wiki and document retrieval bindings. Only published page Assets enter the migrated Wiki Collection; Raw never becomes a Wiki search result merely because it contains Markdown. A workspace containing Raw and an empty Wiki directory can initialize before its first compilation. Combined workspaces retain a version 4 outer manifest and a version 5 nested Wiki manifest. Existing version 3 Wiki manifests remain readable without automatic mutation or Raw import.
+
+Restart rederives Raw facts and exact bindings from verified archive bytes and rejects mismatching Catalog/manifest facts. Original receipt lineage, schema validation, consumed/pending status and retirement compatibility remain separate incomplete migration work: presence of a Raw Asset does not classify it as unprocessed or authorize automatic recompilation.
