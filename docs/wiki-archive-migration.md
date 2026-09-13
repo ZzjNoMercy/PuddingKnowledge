@@ -198,7 +198,7 @@ Provide one `--pack NAME=ABSOLUTE_PATH` for each actual ancestor/direct borrow t
 
 On first persistent startup, combine `--wiki-archive` with `--wiki-schema-evidence /absolute/private-output/schema.json`. This also works alongside `--document-migration`. Wiki workspace version 7 owns a private `wiki-schema.json`, binds its digest in the workspace manifest, and re-admits it against owned archive bytes on every load. Combined version 4 accepts nested version 7. Restart needs only `--state-dir`; original archive and installation resources may be removed. Existing versions 3/5/6 continue to read unchanged. Loading retains the archive shared gate across validation and binding reads and performs a final inventory verification.
 
-The returned `schema_bundle` binds the schema-aware compiler publication validator described below. Evidence and workspace manifests are local integrity commitments, not signatures against an attacker who can rewrite all owned files and hashes. The owning installation's identity/writer authority, full schema update lifecycle, compiler publication transaction and activation/rollback remain separate unfinished work.
+The returned `schema_bundle` binds the schema-aware compiler publication validator described below. Evidence and workspace manifests are local integrity commitments, not signatures against an attacker who can rewrite all owned files and hashes. The owning installation's identity/writer authority, full schema update lifecycle and activation/rollback remain separate unfinished work.
 
 ## Schema-gated single-page compilation
 
@@ -216,7 +216,7 @@ This uses the current one-page draft API. It rejects overwriting archived or con
 
 `from_owned_workspace` seeds this port from verified owned schema/Raw and current validated single-page publications. Capturing that snapshot and creating the authoring ownership row share one transaction. Once explicitly opened, the prior single-page writer rejects new work and in-flight publication for that Space, preventing two independent writers. Initialization lints the baseline before storing it. Concurrent stale patches and mid-write process death leave no partial mutation.
 
-The port is internal and is not automatically enabled at startup. Active-page Catalog/query/read projection is described below. Multi-page model orchestration, public administration integration and lifecycle recovery commands remain unfinished. Do not enable this port for normal product use until those integrations are complete. No production activation or complete repository separation claim follows from these transaction tests.
+The port is not automatically enabled at startup. Active-page Catalog/query/read projection and explicit HTTP administration are described below. Multi-page model orchestration, Console integration and lifecycle recovery commands remain unfinished. No production activation or complete repository separation claim follows from these transaction tests.
 
 ## Current authoring Catalog and read/query projection
 
@@ -224,4 +224,22 @@ Owned authoring now commits its active Catalog Assets and a `Current Wiki` Colle
 
 `from_owned_workspace` explicitly upgrades the earlier unprojected authoring state by adding and setting the persisted projection flag and creating its Catalog projection under the same transaction. It refuses existing conflicting projection ownership. Every authoring read checks the active Assets and collection against the committed authoring state; disabling an already-bound projection, deleting Assets, or forging digests/collection membership rejects. A projection failure rolls back the patch as well. Query candidate bytes and Catalog facts come from one SQLite read transaction; a WAL concurrent-update test verifies the snapshot boundary.
 
-On independent local server restart, an already-existing authoring state is re-opened and supplies dynamic Wiki read/query services even without a model configuration. This does not create or enable authoring automatically. Multi-page model/admin orchestration and lifecycle recovery commands remain open; historical collections are deliberately retained rather than relabelled as current. Production activation and complete repository separation remain unproven.
+On independent local server restart, an already-existing authoring state is re-opened and supplies dynamic Wiki read/query services even without a model configuration. This does not create or enable authoring automatically. Multi-page model orchestration and lifecycle recovery commands remain open; historical collections are deliberately retained rather than relabelled as current. Production activation and complete repository separation remain unproven.
+
+## Explicit multi-page authoring administration
+
+Start the independent local server with `--state-dir /absolute/owned-home --wiki-authoring`. The Home must contain admitted Wiki schema evidence. This explicitly establishes the patch writer and fences the previous single-page writer. Without the flag, existing authoring results remain readable but administration routes are absent. This enables local editing, not installation cutover.
+
+The JSON-only routes below require `knowledge.admin` and the exact `knowledge.space:<space_id>` scope together; tenant-scoped requests reject. The local CLI grants administration for its explicit configurations. HTTP request streams are limited to 32 MiB; duplicate keys, non-finite constants, excessive nesting and unknown fields reject. Responses omit physical paths and internal exception text.
+
+- `POST /v1/wiki/authoring/context`: `{ "space_id": "SPACE", "slugs": [], "selected_raw": ["source.md"] }`. Returns revision, schema commitments/contract, index, log digest, page inventory/digests and explicitly selected page/Raw text. Raw selection uses exact registered snapshot paths and reverified owned archive bytes. Select at most 100 pages and 100 Raw snapshots, with separate 16 MiB aggregate text budgets and 8 MiB per Raw. Input paths never grant filesystem authority.
+- `POST /v1/wiki/authoring/preview`: `{ "space_id": "SPACE", "patch": PATCH }`. Validates the whole final workspace without mutation; returns proposed revision, request digest and changed/retired slugs.
+- `POST /v1/wiki/authoring/apply`: `{ "space_id": "SPACE", "operation_id": "OPERATION", "patch": PATCH }`. Revalidates and atomically commits. Retry the exact request and operation ID after an uncertain response; altered requests using that ID reject. Preview does not reserve the revision.
+
+`PATCH` has `expected_revision`, `changes`, `selected_raw`, `index` and `log_entry`. Each change has `slug`, `markdown`, `expected_digest`, and optional `replacement`. Create uses a null expected digest; update/retirement requires the exact current digest; null Markdown retires the page. The index describes the entire final workspace. Every written page must cite selected immutable Raw. Example shape:
+
+```json
+{"expected_revision":"HASH_FROM_CONTEXT","changes":[{"slug":"concepts/example","markdown":"SCHEMA_VALID_MARKDOWN","expected_digest":null}],"selected_raw":["source.md"],"index":"[[concepts/example]]","log_entry":"Created a source-supported concept."}
+```
+
+Clients can author multi-page patches through HTTP without importing the internal store. Model generation, scheduling, Console editing, recovery commands and whole-installation cutover/rollback still require implementation and validation.

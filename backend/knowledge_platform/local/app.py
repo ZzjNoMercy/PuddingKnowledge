@@ -52,6 +52,7 @@ def _build_app(
     processing_bindings: Any | None = None,
     processing_worker: Any | None = None,
     wiki_compilation: Any | None = None,
+    wiki_authoring: Any | None = None,
     wiki_provider: Any | None = None,
     wiki_blob_reader: Any | None = None,
     read_later: Any | None = None,
@@ -187,6 +188,9 @@ def _build_app(
         principal_provider=lambda: principal,
         correlation_provider=current_correlation,
     )
+    if wiki_authoring is not None:
+        from knowledge_platform.transport.fastapi_wiki_authoring_router import create_wiki_authoring_router
+        app.include_router(create_wiki_authoring_router(wiki_authoring, principal_provider=lambda: principal))
     install_tracing(app, SqliteTraceSink(repository._database_path.parent / "retrieval-traces.sqlite3"), principal)
     from .wiki_processing_state import WikiProcessingStateService
     from knowledge_platform.transport.fastapi_wiki_state_router import create_wiki_state_router

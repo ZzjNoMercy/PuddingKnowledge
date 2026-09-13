@@ -1,7 +1,7 @@
 """Owned transactional Wiki authoring state, separate from the single-draft API.
 
-The ledger is an internal application port. Catalog/read/query projection and
-multi-page model orchestration are subsequent integrations, not implied here.
+Catalog/read/query projection shares the transaction. Explicit administration
+can call this port; multi-page model orchestration is a separate integration.
 """
 from __future__ import annotations
 import sqlite3

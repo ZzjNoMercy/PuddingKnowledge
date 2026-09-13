@@ -74,9 +74,12 @@ def main() -> int:
     parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
     parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
+    parser.add_argument("--wiki-authoring", action="store_true", help="explicitly enable owned schema Wiki patch administration and writer handoff")
     parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
     parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
+    if args.wiki_authoring and args.state_dir is None:
+        parser.error("--wiki-authoring requires an owned persistent state-dir")
     if args.state_dir is None and (args.catalog is None or args.wiki_root is None):
         parser.error("--catalog and --wiki-root are required without --state-dir")
     if args.document_migration and (args.state_dir is None or args.catalog or args.wiki_root):
@@ -230,6 +233,8 @@ def main() -> int:
                                  "wiki_provider": published, "wiki_blob_reader": published}
             except (ValueError, OSError, TypeError):
                 parser.exit(2, "Local Wiki configuration or owned state is invalid\n")
+        if args.wiki_authoring and (owned is None or owned.get("schema_bundle") is None):
+            parser.exit(2, "--wiki-authoring requires admitted owned Wiki schema evidence\n")
         if owned is not None and owned.get("schema_bundle") is not None:
             from knowledge_platform.local.wiki_authoring import WikiAuthoringStore
             from knowledge_platform.local.wiki_authoring_projection import AuthoringReaderServices
@@ -238,10 +243,13 @@ def main() -> int:
                 has_authoring = authoring_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_wiki_authoring_state'").fetchone()
                 authoring_space = owned.get("schema_space_id", owned.get("space_id"))
                 has_authoring = has_authoring and authoring_db.execute('SELECT 1 FROM knowledge_wiki_authoring_state WHERE space_id=?',(authoring_space,)).fetchone()
-            if has_authoring:
+            if has_authoring or args.wiki_authoring:
                 authoring=WikiAuthoringStore.from_owned_workspace(owned)
                 published=PublishedWikiReader(SqliteCatalogQueryRepository(catalog),AuthoringReaderServices(authoring,services if wiki_config else None))
                 wiki_services.update(wiki_provider=published,wiki_blob_reader=published)
+                if args.wiki_authoring:
+                    from knowledge_platform.local.wiki_authoring_admin import WikiAuthoringAdmin
+                    wiki_services["wiki_authoring"]=WikiAuthoringAdmin(authoring,evidence_root=owned["evidence_root"])
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
@@ -251,7 +259,7 @@ def main() -> int:
             *database_scopes,
             *structured_scopes,
             *(("knowledge.processing",) if wiki_config or read_later else ()),
-            *(("knowledge.admin",) if args.asset_binding_review_queue or feishu or files or packages or index_config else ()),
+            *(("knowledge.admin",) if args.wiki_authoring or args.asset_binding_review_queue or feishu or files or packages or index_config else ()),
         ))
         app = _build_app(
             SqliteCatalogQueryRepository(catalog), materialized["file_bindings"], principal,
