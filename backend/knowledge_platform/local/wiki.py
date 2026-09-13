@@ -251,7 +251,8 @@ class _ConfiguredRawSnapshotRepository:
 class _PersistentWikiStore:
     """Durable claim/publication store with a crash-releasable per-key lock."""
 
-    def __init__(self, *, database_path: Path, state_root: Path, space_id: str, publish_collection: bool = False) -> None:
+    def __init__(self, *, database_path: Path, state_root: Path, space_id: str, publish_collection: bool = False, schema_publication=None) -> None:
+        self.schema_publication = schema_publication
         self.publish_collection = publish_collection
         self.database_path = _safe_database(database_path)
         self.state_root = _safe_state_root(state_root)
@@ -284,6 +285,10 @@ class _PersistentWikiStore:
                     updated_at TEXT NOT NULL
             )"""
             )
+
+            if self.schema_publication is not None:
+                self.schema_publication.initialize(connection)
+                self.schema_publication._current(connection)
 
     @staticmethod
     def _catalog_source_matches(connection: sqlite3.Connection, snapshot: RawSnapshot) -> None:
@@ -347,6 +352,9 @@ class _PersistentWikiStore:
             return WikiCompilationClaim(False)
         try:
             with self._connect() as connection:
+                if self.schema_publication is not None:
+                    connection.execute("BEGIN IMMEDIATE")
+                    self.schema_publication._current(connection)
                 row = connection.execute(f"SELECT * FROM {_TABLE} WHERE key_digest = ?", (key_digest,)).fetchone()
                 if row is not None:
                     if row["space_id"] != self.space_id or row["fingerprint"] != fingerprint:
@@ -434,6 +442,8 @@ class _PersistentWikiStore:
             expected = fingerprint
             if row is None or row["status"] != "running" or row["fingerprint"] != expected:
                 raise ValueError("Wiki publication claim is not owned")
+            if self.schema_publication is not None:
+                self.schema_publication.publish(connection, draft, snapshot=snapshot, resource_uri=resource_uri)
             published_digest = _digest(markdown)
             existing = connection.execute(
                 "SELECT space_id, kind, source_type, source_uri, revision, content_digest FROM knowledge_assets WHERE id = ?",
@@ -556,7 +566,7 @@ class _BoundWikiCompilationWorker(WikiCompilationWorker):
 
 
 def build_wiki_services(
-    config: Mapping[str, Any], catalog_path: Path, state_root: Path, *, captured_sources=None, feishu_sources=None
+    config: Mapping[str, Any], catalog_path: Path, state_root: Path, *, captured_sources=None, feishu_sources=None, schema_workspace=None
 ) -> WikiServices:
     """Build the durable Wiki worker and dynamic publication reader."""
 
@@ -576,7 +586,13 @@ def build_wiki_services(
         with sqlite3.connect(catalog_path) as connection:
             if connection.execute("SELECT id FROM knowledge_spaces WHERE id=?", (config["space_id"],)).fetchone() is None:
                 raise ValueError("Configured Wiki Space is absent from Catalog")
-    store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id=config["space_id"], publish_collection=config["version"] == 2)
+    schema_publication = None
+    if schema_workspace is not None and schema_workspace.get("schema_bundle") is not None:
+        from .wiki_schema_publication import SchemaPublication
+        schema_publication = SchemaPublication(schema_workspace, catalog_path)
+        if schema_publication.space_id != config["space_id"]:
+            raise ValueError("Schema workspace does not own configured compilation Space")
+    store = _PersistentWikiStore(database_path=catalog_path, state_root=state_root, space_id=config["space_id"], publish_collection=config["version"] == 2, schema_publication=schema_publication)
     jobs = _WorkerJobAdapter(store)
     snapshots = _ConfiguredRawSnapshotRepository(assets=assets, space_id=config["space_id"], catalog_path=catalog_path)
     if feishu_sources is not None:
@@ -587,9 +603,9 @@ def build_wiki_services(
         snapshots = CaptureAndConfiguredSnapshots(captured_sources, snapshots)
     worker = _BoundWikiCompilationWorker(
         snapshots=snapshots,
-        context=BoundedWikiContextService(),
-        model=HttpWikiModelGateway(dict(model_config)),
-        validator=LocalWikiDraftValidator(),
+        context=schema_publication or BoundedWikiContextService(),
+        model=(HttpWikiModelGateway(dict(model_config), schema_mode=True) if schema_publication is not None else HttpWikiModelGateway(dict(model_config))),
+        validator=schema_publication or LocalWikiDraftValidator(),
         publisher=store,
         jobs=jobs,
     )

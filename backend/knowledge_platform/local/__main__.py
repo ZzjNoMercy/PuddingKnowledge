@@ -223,7 +223,7 @@ def main() -> int:
             from knowledge_platform.local.wiki import build_wiki_services
             from knowledge_platform.local.wiki_query import PublishedWikiReader
             try:
-                services = build_wiki_services(wiki_config, catalog, args.state_dir / "processing", captured_sources=read_later, feishu_sources=feishu)
+                services = build_wiki_services(wiki_config, catalog, args.state_dir / "processing", captured_sources=read_later, feishu_sources=feishu, schema_workspace=owned)
                 published = PublishedWikiReader(SqliteCatalogQueryRepository(catalog), services)
                 wiki_services = {"wiki_compilation": services.wiki_compilation,
                                  "wiki_provider": published, "wiki_blob_reader": published}

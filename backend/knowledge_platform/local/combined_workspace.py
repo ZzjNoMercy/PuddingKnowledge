@@ -200,6 +200,6 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
         raise CombinedWorkspaceError(str(error)) from error
     if set(documents["file_bindings"]) & set(wiki["file_bindings"]):
         raise CombinedWorkspaceError("document and Wiki bindings overlap")
-    return {"schema_bundle": wiki["schema_bundle"], "catalog": root / "catalog.sqlite3", "file_bindings": {**documents["file_bindings"], **wiki["file_bindings"]},
+    return {"schema_space_id": wiki["space_id"], "evidence_root": root / "wiki-evidence", "schema_bundle": wiki["schema_bundle"], "catalog": root / "catalog.sqlite3", "file_bindings": {**documents["file_bindings"], **wiki["file_bindings"]},
             "document_bindings": documents["document_bindings"], "space_ids": sorted(set(documents["space_ids"]) | set(wiki["space_ids"])),
             "pages": wiki["pages"], "wiki_bindings": wiki["wiki_bindings"], "raw_bindings": wiki["raw_bindings"], "activation_allowed": False}
