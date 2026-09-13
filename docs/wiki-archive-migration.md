@@ -242,4 +242,18 @@ The JSON-only routes below require `knowledge.admin` and the exact `knowledge.sp
 {"expected_revision":"HASH_FROM_CONTEXT","changes":[{"slug":"concepts/example","markdown":"SCHEMA_VALID_MARKDOWN","expected_digest":null}],"selected_raw":["source.md"],"index":"[[concepts/example]]","log_entry":"Created a source-supported concept."}
 ```
 
-Clients can author multi-page patches through HTTP without importing the internal store. Model generation, scheduling, Console editing, recovery commands and whole-installation cutover/rollback still require implementation and validation.
+Clients can author multi-page patches through HTTP without importing the internal store. Model generation is described below; scheduling, Console editing, recovery commands and whole-installation cutover/rollback still require implementation and validation.
+
+## Durable model-generated multi-page proposals
+
+Add `--wiki-authoring-model-config /absolute/model.json` alongside `--wiki-authoring` to enable generation. The explicit config has `endpoint`, `model` and optional `api_key_env`; literal credentials and unknown fields reject. Only loopback endpoints may use HTTP; other endpoints require HTTPS. Proxy environment variables and redirects are disabled. Credential values are resolved only for the model request, never persisted in proposals.
+
+`POST /v1/wiki/authoring/generate` accepts `space_id`, `operation_id`, `expected_revision`, `slugs`, `selected_raw`, and a nonempty `instruction`. The service captures verified selected Raw/pages, complete index/inventory and admitted resolved schema, requiring the supplied revision to match. Context is bounded to 4 MiB and model responses to 8 MiB. No truncation or automatic retry occurs.
+
+The model can return only `{changes, index, log_entry}`; each change has `slug`, `markdown` and optional `replacement`. The server supplies revision, selected Raw and page digest preconditions. Existing pages may change only when explicitly selected in `slugs`; full final-state validation still applies. Index and existing page text identify existing state, not independent evidence for new facts. Normal `stop`, nonempty JSON and no tool/function call or refusal are required. This validates structural/schema/source attribution, not the truth of every generated statement.
+
+A durable unique claim precedes the network request. Results have `state=ready|failed|unsettled` inside the response data; HTTP/envelope success alone is not generation success. Ready contains a complete validated patch and does not publish it. Submit that patch through the existing `apply` action after review. Failed has no patch. Unsettled means the attempt has no recorded outcome, not that its process is alive; it does not trigger automatic retry or takeover. A new operation ID is an explicit new model attempt and may incur another request.
+
+`POST /v1/wiki/authoring/proposal` with `{space_id, operation_id}` only reads the committed record. Exact generate retries return existing ready/failed/unsettled records without calling the model, including after restart without model config. A changed request or actor with the same operation ID rejects. Request, actual context hash, model-config hash, state and patch are receipt-bound; owner-controlled local hashes are integrity checks, not signatures. A ready proposal may become stale after later edits; apply still enforces current CAS. `publication_performed=false` describes generation itself and is not a reconciliation of later independent apply calls.
+
+This connects model proposals to the multi-page HTTP publishing path. Scheduling, unsettled-attempt operator recovery, Console review, schema lifecycle and whole-installation cutover/rollback remain unfinished.

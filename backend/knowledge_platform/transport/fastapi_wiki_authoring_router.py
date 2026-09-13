@@ -1,5 +1,5 @@
 """Bounded HTTP input for explicit Wiki authoring administration."""
-import json
+from knowledge_platform.wiki.json_input import decode_request
 import uuid
 from fastapi import APIRouter, Depends, Request
 from starlette.concurrency import run_in_threadpool
@@ -9,21 +9,6 @@ from .fastapi_router import _resolve
 MAX_REQUEST_BYTES=32*1024*1024
 
 
-def decode_request(data):
-    def pairs(items):
-        result={}
-        for key,value in items:
-            if key in result:raise ValueError('Duplicate JSON key')
-            result[key]=value
-        return result
-    value=json.loads(data,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid number')))
-    stack=[(value,0)];count=0
-    while stack:
-        item,depth=stack.pop();count+=1
-        if depth>32 or count>100000:raise ValueError('JSON structure budget exceeded')
-        if isinstance(item,dict):stack.extend((v,depth+1) for v in item.values())
-        elif isinstance(item,list):stack.extend((v,depth+1) for v in item)
-    return value
 
 
 def create_wiki_authoring_router(service, *, principal_provider):
@@ -36,7 +21,7 @@ def create_wiki_authoring_router(service, *, principal_provider):
         def error(code,message):return QueryResult(status='error',trace_id=trace,error=QueryError(code=code,message=message)).to_dict()
         if who.tenant_id is not None or 'knowledge.admin' not in who.scopes:
             return error(QueryErrorCode.PERMISSION_DENIED,'Wiki authoring admin and exact Space scope are required')
-        if action not in ('context','preview','apply'):return error(QueryErrorCode.INVALID_REQUEST,'Unknown authoring action')
+        if action not in ('context','preview','apply','generate','proposal'):return error(QueryErrorCode.INVALID_REQUEST,'Unknown authoring action')
         if request.headers.get("content-type", "").split(";",1)[0].strip().lower() != "application/json":
             return error(QueryErrorCode.INVALID_REQUEST,"Authoring requests require application/json")
         try:

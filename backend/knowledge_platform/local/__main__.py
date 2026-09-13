@@ -74,10 +74,13 @@ def main() -> int:
     parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
     parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
+    parser.add_argument("--wiki-authoring-model-config", type=Path, help="explicit endpoint/model/credential-env for multi-page proposals; requires --wiki-authoring")
     parser.add_argument("--wiki-authoring", action="store_true", help="explicitly enable owned schema Wiki patch administration and writer handoff")
     parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
     parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
+    if args.wiki_authoring_model_config and not args.wiki_authoring:
+        parser.error("--wiki-authoring-model-config requires --wiki-authoring")
     if args.wiki_authoring and args.state_dir is None:
         parser.error("--wiki-authoring requires an owned persistent state-dir")
     if args.state_dir is None and (args.catalog is None or args.wiki_root is None):
@@ -156,6 +159,16 @@ def main() -> int:
                 or not isinstance(capture_config["allowed_origins"], list)
                 or any(not isinstance(value, str) for value in capture_config["allowed_origins"])):
             parser.error("Invalid capture configuration")
+    patch_model = None
+    if args.wiki_authoring_model_config:
+        from knowledge_platform.local.wiki_patch_model import HttpWikiPatchModel
+        from knowledge_platform.distribution.wiki_archive import _read
+        from knowledge_platform.wiki.json_input import decode_request
+        try:
+            config_bytes, _ = _read(args.wiki_authoring_model_config.expanduser().absolute(), private=False, limit=65536)
+            patch_model = HttpWikiPatchModel(decode_request(config_bytes))
+        except (ValueError, OSError, TypeError, RecursionError):
+            parser.exit(2, "Wiki authoring model configuration is invalid\n")
     wiki_config = None
     if args.wiki_config:
         if args.state_dir is None:
@@ -249,7 +262,7 @@ def main() -> int:
                 wiki_services.update(wiki_provider=published,wiki_blob_reader=published)
                 if args.wiki_authoring:
                     from knowledge_platform.local.wiki_authoring_admin import WikiAuthoringAdmin
-                    wiki_services["wiki_authoring"]=WikiAuthoringAdmin(authoring,evidence_root=owned["evidence_root"])
+                    wiki_services["wiki_authoring"]=WikiAuthoringAdmin(authoring,evidence_root=owned["evidence_root"],model=patch_model)
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",

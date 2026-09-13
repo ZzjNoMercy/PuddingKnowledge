@@ -27,9 +27,11 @@ def parse_patch(value):
 
 
 class WikiAuthoringAdmin:
-    def __init__(self, store, *, evidence_root):
+    def __init__(self, store, *, evidence_root, model=None):
         self.store=store
         self.evidence_root=Path(evidence_root)
+        from .wiki_authoring_generation import WikiAuthoringGeneration
+        self.generation=WikiAuthoringGeneration(self,model)
 
     def authorize(self, principal, space_id):
         scopes=set(principal.scopes)
@@ -76,3 +78,9 @@ class WikiAuthoringAdmin:
         patch=parse_patch(request['patch'])
         revision=self.store.apply(patch,operation_id=request['operation_id'])
         return {'operation_id':request['operation_id'],'revision':revision}
+
+    def generate(self, principal, request):
+        return self.generation.generate(principal,request)
+
+    def proposal(self, principal, request):
+        return self.generation.proposal(principal,request)
