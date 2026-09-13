@@ -290,6 +290,11 @@ class _PersistentWikiStore:
                 self.schema_publication.initialize(connection)
                 self.schema_publication._current(connection)
 
+    def _assert_writer_owner(self, connection):
+        table=connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_wiki_authoring_state'").fetchone()
+        if table and connection.execute('SELECT 1 FROM knowledge_wiki_authoring_state WHERE space_id=?',(self.space_id,)).fetchone():
+            raise ValueError('Wiki writes are owned by transactional patch authoring')
+
     @staticmethod
     def _catalog_source_matches(connection: sqlite3.Connection, snapshot: RawSnapshot) -> None:
         row = connection.execute(
@@ -352,8 +357,9 @@ class _PersistentWikiStore:
             return WikiCompilationClaim(False)
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._assert_writer_owner(connection)
                 if self.schema_publication is not None:
-                    connection.execute("BEGIN IMMEDIATE")
                     self.schema_publication._current(connection)
                 row = connection.execute(f"SELECT * FROM {_TABLE} WHERE key_digest = ?", (key_digest,)).fetchone()
                 if row is not None:
@@ -437,6 +443,7 @@ class _PersistentWikiStore:
         resource_uri = f"knowledge://spaces/{self.space_id}/assets/{output_id}"
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._assert_writer_owner(connection)
             self._catalog_source_matches(connection, snapshot)
             row = connection.execute(f"SELECT * FROM {_TABLE} WHERE key_digest = ?", (key_digest,)).fetchone()
             expected = fingerprint
