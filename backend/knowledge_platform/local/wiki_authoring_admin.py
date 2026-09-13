@@ -84,3 +84,6 @@ class WikiAuthoringAdmin:
 
     def proposal(self, principal, request):
         return self.generation.proposal(principal,request)
+
+    def abandon(self, principal, request):
+        return self.generation.abandon(principal,request)
