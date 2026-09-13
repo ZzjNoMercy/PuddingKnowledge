@@ -188,6 +188,9 @@ def _build_app(
         correlation_provider=current_correlation,
     )
     install_tracing(app, SqliteTraceSink(repository._database_path.parent / "retrieval-traces.sqlite3"), principal)
+    from .wiki_processing_state import WikiProcessingStateService
+    from knowledge_platform.transport.fastapi_wiki_state_router import create_wiki_state_router
+    app.include_router(create_wiki_state_router(WikiProcessingStateService(repository._database_path), principal_provider=lambda: principal))
     if read_later is not None:
         from knowledge_platform.transport.fastapi_capture_router import create_capture_router
         app.include_router(create_capture_router(read_later, principal_provider=lambda: principal, wiki_compilation=wiki_compilation))
