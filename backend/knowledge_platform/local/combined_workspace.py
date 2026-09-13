@@ -128,7 +128,7 @@ def _source_commitments(document, wiki):
     return document_digest, document_identity, wiki_digest, wiki_identity
 
 
-def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: Path | str, state_dir: Path | str) -> dict:
+def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: Path | str, state_dir: Path | str, *, schema_evidence: Path | None = None) -> dict:
     document_candidate, wiki_archive, root = _private(document_candidate), _private(wiki_archive), _private(state_dir)
     if root == document_candidate or root == wiki_archive or root.is_relative_to(document_candidate) or root.is_relative_to(wiki_archive) or document_candidate.is_relative_to(root) or wiki_archive.is_relative_to(root):
         raise CombinedWorkspaceError("inputs and owned state must be disjoint")
@@ -145,7 +145,7 @@ def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: P
     try:
         doc_stage, wiki_stage = staging / "doc", staging / "wiki"
         bootstrap_migrated_documents(document_candidate, doc_stage)
-        bootstrap_migrated_wiki(wiki_archive, wiki_stage)
+        bootstrap_migrated_wiki(wiki_archive, wiki_stage, schema_evidence=schema_evidence)
         _merge_catalog(doc_stage / "catalog.sqlite3", wiki_stage / "catalog.sqlite3", staging / "catalog.sqlite3")
         os.chmod(staging / "catalog.sqlite3", 0o600)
         os.replace(doc_stage / "blobs", staging / "blobs")
@@ -158,6 +158,8 @@ def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: P
         _write(staging / "workspace.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
         for name in ("catalog.sqlite3", "blobs", "wiki-evidence", "workspace.json"):
             os.replace(staging / name, root / name)
+        if schema_evidence is not None:
+            os.replace(wiki_stage / "wiki-schema.json", root / "wiki-schema.json")
         _sync(root)
         shutil.rmtree(staging)
         loaded = load_combined_workspace(root, manifest, _initializing_ok=True)
@@ -189,7 +191,7 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
     dm, wm = manifest["document_manifest"], manifest["wiki_manifest"]
     if not isinstance(dm, dict) or not isinstance(wm, dict):
         raise CombinedWorkspaceError("nested workspace manifests are invalid")
-    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5, 6)))):
+    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5, 6, 7)))):
         raise CombinedWorkspaceError("nested Catalog binding is invalid")
     try:
         documents = load_migrated_workspace(root, dm)
@@ -198,6 +200,6 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
         raise CombinedWorkspaceError(str(error)) from error
     if set(documents["file_bindings"]) & set(wiki["file_bindings"]):
         raise CombinedWorkspaceError("document and Wiki bindings overlap")
-    return {"catalog": root / "catalog.sqlite3", "file_bindings": {**documents["file_bindings"], **wiki["file_bindings"]},
+    return {"schema_bundle": wiki["schema_bundle"], "catalog": root / "catalog.sqlite3", "file_bindings": {**documents["file_bindings"], **wiki["file_bindings"]},
             "document_bindings": documents["document_bindings"], "space_ids": sorted(set(documents["space_ids"]) | set(wiki["space_ids"])),
             "pages": wiki["pages"], "wiki_bindings": wiki["wiki_bindings"], "raw_bindings": wiki["raw_bindings"], "activation_allowed": False}

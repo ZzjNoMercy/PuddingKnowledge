@@ -181,3 +181,21 @@ This port is not schema bundle admission and is not yet connected to the model c
 Resolution retains legacy declaration ordering, custom overrides, extends depth/cycle validation and direct explicit borrow selection. It deliberately does not recursively expand a borrowed target's own parents or borrowing, because the legacy resolver did not do so. The catalog is the exact set of ancestors plus direct custom borrow targets used by that algorithm, not a general gbrain dependency closure. Missing packs, unknown borrow selections, duplicate/alias/unsafe YAML, malformed declarations and generated AGENTS mismatch fail closed. Schema hooks, paths and AGENTS are data; no file access, subprocess, regex hook execution or model calls occur.
 
 A frozen fixture generated from the original pure rules verifies exact resolved YAML and old bundle hash. Stricter rejection of ambiguous YAML, unsafe names/prefixes, unknown contract types and unused catalog entries is intentional. This pure admission is not yet wired to archive capture, installed schema ownership or compiler publication. It proves input consistency against supplied commitments, not the authority supplying those commitments. Full migration and activation remain incomplete.
+
+## Captured schema evidence and owned workspaces
+
+The offline capture CLI binds actual external pack bytes to a verified Wiki archive:
+
+```sh
+python -m knowledge_platform.distribution.wiki_schema_evidence \
+  --wiki-archive /absolute/archive \
+  --pack gbrain-base-v2=/absolute/installation/resources/gbrain-base-v2.yaml \
+  --expected-bundle-hash HASH_FROM_SOURCE_BUNDLE \
+  --output /absolute/private-output/schema.json
+```
+
+Provide one `--pack NAME=ABSOLUTE_PATH` for each actual ancestor/direct borrow target. No default catalog is inferred. The output parent must be private and owned. Identical completed output is replayable; changed commitments reject. Capture compares external resource bytes before and after admission and verifies the archive under its shared gate. This is an offline operation, not a live cross-installation writer fence or authentication of arbitrary operator-selected files.
+
+On first persistent startup, combine `--wiki-archive` with `--wiki-schema-evidence /absolute/private-output/schema.json`. This also works alongside `--document-migration`. Wiki workspace version 7 owns a private `wiki-schema.json`, binds its digest in the workspace manifest, and re-admits it against owned archive bytes on every load. Combined version 4 accepts nested version 7. Restart needs only `--state-dir`; original archive and installation resources may be removed. Existing versions 3/5/6 continue to read unchanged. Loading retains the archive shared gate across validation and binding reads and performs a final inventory verification.
+
+The returned `schema_bundle` is prepared for compiler wiring; publication is not yet gated by it. Evidence and workspace manifests are local integrity commitments, not signatures against an attacker who can rewrite all owned files and hashes. The owning installation's identity/writer authority, full schema update lifecycle, compiler publication transaction and activation/rollback remain separate unfinished work.

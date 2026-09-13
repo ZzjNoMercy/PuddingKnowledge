@@ -212,7 +212,7 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
             return load_combined_workspace(state_dir, manifest)
         except (ValueError, OSError, RuntimeError) as error:
             raise WorkspaceError(str(error)) from error
-    if manifest.get("version") in (3, 5, 6) and manifest.get("kind") == "migrated_wiki":
+    if manifest.get("version") in (3, 5, 6, 7) and manifest.get("kind") == "migrated_wiki":
         from .migrated_wiki import load_migrated_wiki_workspace
         try:
             return load_migrated_wiki_workspace(state_dir, manifest)
@@ -296,9 +296,12 @@ def open_persistent_workspace(
     wiki_root: Path | None = None,
     document_migration: Path | None = None,
     wiki_archive: Path | None = None,
+    schema_evidence: Path | None = None,
 ) -> PersistentWorkspace:
     """Open or atomically initialize a persistent owned workspace."""
 
+    if schema_evidence is not None and wiki_archive is None:
+        raise WorkspaceError("schema evidence requires Wiki archive bootstrap")
     if wiki_archive is not None and any(v is not None for v in (catalog, wiki_root)):
         raise WorkspaceError("Wiki archive requires its own new workspace")
     if document_migration is not None and (catalog is not None or wiki_root is not None):
@@ -306,7 +309,7 @@ def open_persistent_workspace(
     root = _path(state_dir)
     if root == root.parent:
         raise WorkspaceError("state-dir must not be the filesystem root")
-    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", _PROCESSING, *_SQLITE_AUXILIARY}
+    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
     if root.exists():
         if root.is_symlink() or not root.is_dir():
             raise WorkspaceError("state-dir must be a real directory")
@@ -319,10 +322,10 @@ def open_persistent_workspace(
     try:
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
-        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "retrieval-traces.sqlite3")]
+        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
-        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", _PROCESSING, *_SQLITE_AUXILIARY}
+        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
         unexpected = [entry for entry in root.iterdir() if entry.name not in allowed]
         if unexpected:
             raise WorkspaceError("state-dir contains unexpected or partial entries")
@@ -336,14 +339,14 @@ def open_persistent_workspace(
             if wiki_archive is not None and document_migration is not None:
                 from .combined_workspace import bootstrap_combined_workspace
                 try:
-                    bootstrap_combined_workspace(document_migration, wiki_archive, root)
+                    bootstrap_combined_workspace(document_migration, wiki_archive, root, schema_evidence=schema_evidence)
                 except Exception as error:
                     raise WorkspaceError(str(error)) from error
                 payload = _load_manifest(root)
             elif wiki_archive is not None:
                 from .migrated_wiki import bootstrap_migrated_wiki
                 try:
-                    bootstrap_migrated_wiki(wiki_archive, root)
+                    bootstrap_migrated_wiki(wiki_archive, root, schema_evidence=schema_evidence)
                 except Exception as error:
                     raise WorkspaceError(str(error)) from error
                 payload = _load_manifest(root)

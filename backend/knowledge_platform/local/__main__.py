@@ -61,6 +61,7 @@ def main() -> int:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--document-migration", type=Path, help="verified offline document candidate; first state-dir start only")
+    parser.add_argument("--wiki-schema-evidence", type=Path, help="captured schema evidence; requires --wiki-archive")
     parser.add_argument("--wiki-archive", type=Path, help="verified Wiki archive; first state-dir start only")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--console-origin")
@@ -79,6 +80,8 @@ def main() -> int:
         parser.error("--catalog and --wiki-root are required without --state-dir")
     if args.document_migration and (args.state_dir is None or args.catalog or args.wiki_root):
         parser.error("--document-migration requires --state-dir and cannot accompany Catalog/Wiki inputs")
+    if args.wiki_schema_evidence and not args.wiki_archive:
+        parser.error("--wiki-schema-evidence requires --wiki-archive")
     if args.wiki_archive and (args.state_dir is None or args.catalog or args.wiki_root):
         parser.error("--wiki-archive requires a new --state-dir without Catalog/Wiki inputs")
     if not 1 <= args.port <= 65535:
@@ -159,7 +162,7 @@ def main() -> int:
         except (ValueError, OSError, TypeError):
             parser.exit(2, "Invalid local Wiki configuration\n")
     ready = _output_path(args.ready_file)
-    persistent = (open_persistent_workspace(args.state_dir, catalog=args.catalog, wiki_root=args.wiki_root, document_migration=args.document_migration, wiki_archive=args.wiki_archive)
+    persistent = (open_persistent_workspace(args.state_dir, catalog=args.catalog, wiki_root=args.wiki_root, document_migration=args.document_migration, wiki_archive=args.wiki_archive, schema_evidence=args.wiki_schema_evidence)
                   if args.state_dir is not None else nullcontext(None))
     # Hold the persistent workspace lock for the entire server lifetime.
     with persistent as owned, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
