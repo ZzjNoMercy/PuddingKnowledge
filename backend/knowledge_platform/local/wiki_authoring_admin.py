@@ -98,3 +98,6 @@ class WikiAuthoringAdmin:
 
     def run_queue(self, principal, request):
         return self.queue_service.run_queue(principal,request)
+
+    def control_queue(self, principal, request):
+        return self.queue_service.control.apply(principal,request)

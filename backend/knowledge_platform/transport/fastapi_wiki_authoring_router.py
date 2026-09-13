@@ -21,7 +21,7 @@ def create_wiki_authoring_router(service, *, principal_provider):
         def error(code,message):return QueryResult(status='error',trace_id=trace,error=QueryError(code=code,message=message)).to_dict()
         if who.tenant_id is not None or 'knowledge.admin' not in who.scopes:
             return error(QueryErrorCode.PERMISSION_DENIED,'Wiki authoring admin and exact Space scope are required')
-        if action not in ('context','preview','apply','generate','proposal','abandon','enqueue','queue','run_queue'):return error(QueryErrorCode.INVALID_REQUEST,'Unknown authoring action')
+        if action not in ('context','preview','apply','generate','proposal','abandon','enqueue','queue','run_queue','control_queue'):return error(QueryErrorCode.INVALID_REQUEST,'Unknown authoring action')
         if request.headers.get("content-type", "").split(";",1)[0].strip().lower() != "application/json":
             return error(QueryErrorCode.INVALID_REQUEST,"Authoring requests require application/json")
         try:

@@ -20,21 +20,27 @@ class WikiAuthoringQueue:
                 space_id TEXT NOT NULL,operation_id TEXT NOT NULL,actor TEXT NOT NULL,
                 request_json TEXT NOT NULL,not_before INTEGER NOT NULL,state TEXT NOT NULL,
                 receipt_digest TEXT NOT NULL,PRIMARY KEY(space_id,operation_id))''')
+            from .wiki_queue_control import QueueControl
+            self.control=QueueControl(self,db)
 
     def _read(self,db,op):
         size=db.execute(f'SELECT length(CAST(request_json AS BLOB)) FROM {TABLE} WHERE space_id=? AND operation_id=?',(self.store.space_id,op)).fetchone()
         if size is None:return None
         if type(size[0]) is not int or size[0]>256*1024:raise ValueError('Queue request budget exceeded')
-        row=db.execute(f'SELECT actor,request_json,not_before,state,receipt_digest FROM {TABLE} WHERE space_id=? AND operation_id=?',(self.store.space_id,op)).fetchone()
-        if row[3] not in ('queued','rejected') or digest(canonical([self.store.space_id,op,*row[:4]]))!=row[4]:raise ValueError('Queue commitment mismatch')
+        row=db.execute(f'SELECT actor,request_json,not_before,state,receipt_digest,history_digest FROM {TABLE} WHERE space_id=? AND operation_id=?',(self.store.space_id,op)).fetchone()
+        if row[3] not in ('queued','rejected','cancelled') or self.receipt(op,row[:4],row[5])!=row[4]:raise ValueError('Queue commitment mismatch')
         request=decode_request(row[1]);exact(request,FIELDS)
         if request['operation_id']!=op or request['space_id']!=self.store.space_id:raise ValueError('Queue identity mismatch')
+        self.control.history(db,op,row)
         return row
+
+    def receipt(self,op,values,history=""):
+        return digest(canonical([self.store.space_id,op,*values,*([history] if history else [])]))
 
     def _status(self,db,op,row):
         proposal=self.admin.generation._read(db,op)
         if proposal is not None and proposal[0]!=canonical({'actor':row[0],'request':decode_request(row[1])}):raise ValueError('Queue proposal identity mismatch')
-        if row[3]=='rejected' and proposal is not None:raise ValueError('Rejected admission has a proposal')
+        if row[3] in ('rejected','cancelled') and proposal is not None:raise ValueError('Rejected admission has a proposal')
         return {'operation_id':op,'not_before':row[2],'state':proposal[3] if proposal is not None else row[3],
                 'admission_receipt':row[4],'proposal_receipt':proposal[5] if proposal is not None else None,
                 'execution_liveness':'unknown','automatic_retry':False}
@@ -50,14 +56,14 @@ class WikiAuthoringQueue:
         with self.store._connect() as db:
             db.execute('BEGIN IMMEDIATE');row=self._read(db,op)
             if row is not None:
-                if row[:3]!=(who.subject_id,data,due):raise ValueError('Queue operation identity reused')
+                if row[:2]!=(who.subject_id,data) or self.control.history(db,op,row)!=due:raise ValueError('Queue operation identity reused')
                 return self._status(db,op,row)
             if db.execute(f'SELECT count(*) FROM {TABLE} WHERE space_id=?',(self.store.space_id,)).fetchone()[0]>=MAX_ADMISSIONS:raise ValueError('Queue admission budget exceeded')
             # Validate immutable selection and revision before accepting an admission.
             context=self.admin.context(who,{'space_id':self.store.space_id,'slugs':request['slugs'],'selected_raw':request['selected_raw']})
             if context['revision']!=request['expected_revision']:raise ValueError('Stale queue revision')
-            db.execute(f'INSERT INTO {TABLE} VALUES (?,?,?,?,?,?,?)',(self.store.space_id,op,*values,receipt))
-            return self._status(db,op,(*values,receipt))
+            db.execute(f'INSERT INTO {TABLE} (space_id,operation_id,actor,request_json,not_before,state,receipt_digest) VALUES (?,?,?,?,?,?,?)',(self.store.space_id,op,*values,receipt))
+            return self._status(db,op,(*values,receipt,''))
 
     def queue(self,who,body):
         exact(body,('space_id',),('after','limit'));self.admin.authorize(who,body['space_id'])
@@ -103,7 +109,7 @@ class WikiAuthoringQueue:
                 db.execute('BEGIN IMMEDIATE');current=self._read(db,op)
                 proposal=self.admin.generation._read(db,op)
                 if proposal is None and current[3]=='queued' and current[2]<=int(time.time()):
-                    values=[*current[:3],'rejected'];receipt=digest(canonical([self.store.space_id,op,*values]))
+                    values=[*current[:3],'rejected'];receipt=self.receipt(op,values,current[5])
                     db.execute(f'UPDATE {TABLE} SET state=?,receipt_digest=? WHERE space_id=? AND operation_id=?',('rejected',receipt,self.store.space_id,op))
         with self.store._connect() as db:
             db.execute('BEGIN');return {'processed':self._status(db,op,self._read(db,op))}
