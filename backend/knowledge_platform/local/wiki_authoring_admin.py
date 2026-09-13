@@ -41,9 +41,15 @@ class WikiAuthoringAdmin:
             raise PermissionError('Authoring admin and exact Space scope required')
 
     def context(self, principal, request):
-        exact(request,('space_id',),('slugs','selected_raw'))
+        exact(request,('space_id',),('slugs','selected_raw','raw_after','raw_limit'))
         self.authorize(principal,request['space_id'])
         slugs=strings(request.get('slugs',[]));selected=strings(request.get('selected_raw',[]))
+        raw_after=request.get('raw_after')
+        if raw_after is not None and (not isinstance(raw_after,str) or len(raw_after)>1024):
+            raise ValueError('Invalid raw inventory cursor')
+        raw_limit=request.get('raw_limit',50)
+        if not isinstance(raw_limit,int) or isinstance(raw_limit,bool) or not 1<=raw_limit<=100:
+            raise ValueError('Invalid raw inventory limit')
         revision,pages,index,log=self.store.read()
         if any(s not in pages for s in slugs) or any(s not in self.store.raw for s in selected):raise ValueError('Unknown authoring selection')
         if sum(len(pages[s].encode()) for s in slugs)>16*1024*1024:raise ValueError('Selected page budget exceeded')
@@ -60,10 +66,18 @@ class WikiAuthoringAdmin:
                     if digest(text)!=self.store.raw[snapshot]:raise ValueError('Raw evidence changed')
                     raw.append({'snapshot_path':snapshot,'sha256':self.store.raw[snapshot],'content':text})
                 archive._verify(self.evidence_root)
+        # Inventory is derived only from the store's registered raw commitments.
+        raw_paths=sorted(self.store.raw)
+        if raw_after is not None:
+            raw_paths=[path for path in raw_paths if path>raw_after]
+        raw_page=raw_paths[:raw_limit]
+        raw_next_after=raw_page[-1] if len(raw_paths)>len(raw_page) else None
         return {'space_id':self.store.space_id,'revision':revision,'schema_bundle_hash':self.store.bundle.bundle_hash,
                 'schema_closure_sha256':self.store.bundle.closure_sha256,'contract':asdict(self.store.bundle.lint_contract()),
                 'index':index,'log_digest':digest(log),'inventory':[{'slug':s,'digest':digest(t)} for s,t in sorted(pages.items())],
-                'pages':{s:pages[s] for s in slugs},'raw':raw}
+                'pages':{s:pages[s] for s in slugs},'raw':raw,
+                'raw_inventory':[{'snapshot_path':path,'sha256':self.store.raw[path]} for path in raw_page],
+                'raw_next_after':raw_next_after}
 
     def preview(self, principal, request):
         exact(request,('space_id','patch'))

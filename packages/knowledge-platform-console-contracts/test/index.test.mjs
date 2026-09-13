@@ -38,6 +38,22 @@ test("Console client uses public REST paths and validates the result envelope", 
   assert.equal(calls[0].options.headers.authorization, "Bearer test");
 });
 
+test("Console client exposes only fixed Wiki authoring actions with a portable record payload", async () => {
+  const calls = [];
+  const client = createPlatformClient({
+    baseUrl: "http://127.0.0.1:8080",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ status: "ok", data: { revision: 1 } }), { status: 200 });
+    },
+  });
+  const result = await client.wikiAuthoring("context", { space_id: "space-1", raw_limit: 50 });
+  assert.equal(result.data.revision, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/v1/wiki/authoring/context");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { space_id: "space-1", raw_limit: 50 });
+  assert.throws(() => client.wikiAuthoring("filesystem", {}), { name: "TypeError" });
+});
+
 test("Console client uses Collection as the canonical top-level resource", async () => {
   const calls = [];
   const client = createPlatformClient({

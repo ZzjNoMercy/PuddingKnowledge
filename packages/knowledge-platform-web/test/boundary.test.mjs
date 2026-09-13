@@ -33,8 +33,42 @@ test("same-origin BFF only accepts an explicit loopback Platform origin", async 
   assert.match(proxy, /PLATFORM_PATH\.test\(pathname\)/);
   assert.match(proxy, /target\.pathname !== pathname/);
   assert.doesNotMatch(proxy.match(/const PLATFORM_PATH = ([^;]+)/)?.[1] || "", /%/);
-  assert.match(proxy, /contentLength > 1024 \* 1024/);
+  assert.match(proxy, /DEFAULT_REQUEST_BODY_LIMIT = 1024 \* 1024/);
+  assert.match(proxy, /AUTHORING_REQUEST_BODY_LIMIT = 32 \* 1024 \* 1024/);
+  assert.match(proxy, /AUTHORING_ACTION_PATHS/);
+  assert.match(proxy, /readRequestBodyWithinLimit/);
+  assert.match(proxy, /chunk\.byteLength/);
+  assert.match(proxy, /RequestBodyTooLargeError/);
   assert.doesNotMatch(proxy, /authorization|cookie/i);
+});
+
+test("request body helper enforces actual stream bytes without Content-Length", async () => {
+  const proxy = await import(path.join(root, "src/lib/platform-proxy.ts"));
+  const withinLimit = await proxy.readRequestBodyWithinLimit(
+    new Request("http://localhost", { body: "你好", method: "POST" }),
+    new TextEncoder().encode("你好").byteLength,
+  );
+  assert.equal(withinLimit, "你好");
+
+  await assert.rejects(
+    proxy.readRequestBodyWithinLimit(
+      new Request("http://localhost", { body: "你好", method: "POST" }),
+      "你".length,
+    ),
+    proxy.RequestBodyTooLargeError,
+  );
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("a".repeat(1024 * 1024)));
+      controller.enqueue(new TextEncoder().encode("b"));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    proxy.readRequestBodyWithinLimit({ body: stream }, 1024 * 1024),
+    proxy.RequestBodyTooLargeError,
+  );
 });
 
 test("launcher starts the product Web package instead of the diagnostics Console", async () => {

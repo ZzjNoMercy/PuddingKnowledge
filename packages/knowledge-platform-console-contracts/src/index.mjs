@@ -7,6 +7,10 @@ const NON_PORTABLE_EVIDENCE_TEXT_RE = /(?:password|api[_ -]?key|secret|token|aut
 const NON_PORTABLE_KEYS = new Set(["source_path", "file_path", "physical_path", "artifact_path", "raw_markdown", "published_markdown"]);
 const EVIDENCE_LOCATOR_KEYS = new Set(["page", "line_start", "line_end", "section", "chunk_id"]);
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const WIKI_AUTHORING_ACTIONS = new Set([
+  "context", "preview", "apply", "generate", "proposal", "abandon",
+  "enqueue", "queue", "run_queue", "control_queue",
+]);
 
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -319,6 +323,12 @@ export function createPlatformClient({ baseUrl = "", fetchImpl = globalThis.fetc
     search: (body = {}, { signal } = {}) => request("POST", "/v1/search", body, signal),
     documentRagQuery: (body = {}, { signal } = {}) => request("POST", "/v1/document-rag/query", body, signal),
     wikiQuery: (body = {}, { signal } = {}) => request("POST", "/v1/wiki/query", body, signal),
+    wikiAuthoring: (action, body = {}, { signal } = {}) => {
+      if (typeof action !== "string" || !WIKI_AUTHORING_ACTIONS.has(action)) {
+        throw new TypeError("Wiki authoring action is invalid");
+      }
+      return request("POST", `/v1/wiki/authoring/${action}`, body, signal);
+    },
     tableQuery: (body = {}, { signal } = {}) => request("POST", "/v1/table/query", body, signal),
     query: (body = {}, { signal } = {}) => request("POST", "/v1/query", body, signal),
     knowledgeQuery: (body = {}, { signal } = {}) => request("POST", "/v1/knowledge/query", body, signal),

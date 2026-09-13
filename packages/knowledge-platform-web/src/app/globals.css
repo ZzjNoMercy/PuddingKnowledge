@@ -192,3 +192,26 @@ a { color: inherit; text-decoration: none; }
   .asset-row:not(.compact) > span:not(.asset-main) { display: none; }
   .drawer-meta { grid-template-columns: 1fr; }
 }
+
+.wiki-authoring { grid-column: 1 / -1; }
+.wiki-authoring fieldset { border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 16px; margin: 16px 0; min-width: 0; }
+.wiki-authoring label { display: block; margin: 10px 0; overflow-wrap: anywhere; }
+.wiki-authoring textarea { display: block; width: 100%; min-height: 120px; padding: 12px; font-family: monospace; }
+.wiki-selection { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.wiki-selection > div { max-height: 280px; overflow: auto; }
+.wiki-selection input { width: auto; margin-right: 8px; }
+.wiki-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.wiki-queue-row { padding: 12px 0; border-bottom: 1px solid #ddd; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .wiki-selection { grid-template-columns: 1fr; } }
+.wiki-authoring { padding: 22px; font-size: 13px; }
+.wiki-authoring h2 { margin: 0 0 8px; font-size: 17px; }
+.wiki-authoring h3 { margin: 16px 0 10px; font-size: 13px; }
+.wiki-authoring p { color: var(--muted, #667085); line-height: 1.7; overflow-wrap: anywhere; }
+.wiki-authoring legend { padding: 0 6px; font-weight: 650; }
+.wiki-authoring button { border: 1px solid var(--line); border-radius: 9px; padding: 9px 13px; background: var(--brand); color: white; font-size: 12px; cursor: pointer; }
+.wiki-authoring button:disabled { opacity: .45; cursor: not-allowed; }
+.wiki-authoring button:hover:not(:disabled) { background: var(--brand-dark); }
+.wiki-authoring input:not([type="checkbox"]), .wiki-authoring textarea { display: block; max-width: 100%; margin-top: 7px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: white; color: var(--ink); }
+.wiki-authoring input:not([type="checkbox"]) { width: 360px; }
+.wiki-authoring :is(input, textarea, button):focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.wiki-authoring .wiki-actions { align-items: end; }

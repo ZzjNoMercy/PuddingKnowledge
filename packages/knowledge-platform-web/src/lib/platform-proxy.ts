@@ -2,6 +2,66 @@ import type { NextRequest } from "next/server";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const PLATFORM_PATH = /^\/(?:v1(?:\/[A-Za-z0-9._:+-]+)*|mcp)$/;
+const DEFAULT_REQUEST_BODY_LIMIT = 1024 * 1024;
+const AUTHORING_REQUEST_BODY_LIMIT = 32 * 1024 * 1024;
+const AUTHORING_ACTION_PATHS = new Set([
+  "/v1/wiki/authoring/context",
+  "/v1/wiki/authoring/preview",
+  "/v1/wiki/authoring/apply",
+  "/v1/wiki/authoring/generate",
+  "/v1/wiki/authoring/proposal",
+  "/v1/wiki/authoring/abandon",
+  "/v1/wiki/authoring/enqueue",
+  "/v1/wiki/authoring/queue",
+  "/v1/wiki/authoring/run_queue",
+  "/v1/wiki/authoring/control_queue",
+]);
+
+export class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("Platform request is too large");
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+export function requestBodyLimit(pathname: string): number {
+  return AUTHORING_ACTION_PATHS.has(pathname)
+    ? AUTHORING_REQUEST_BODY_LIMIT
+    : DEFAULT_REQUEST_BODY_LIMIT;
+}
+
+/** Read a request body while enforcing its actual UTF-8 byte length. */
+export async function readRequestBodyWithinLimit(
+  request: Pick<Request, "body">,
+  maxBytes: number,
+): Promise<string | undefined> {
+  if (!request.body) return undefined;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      totalBytes += chunk.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new RequestBodyTooLargeError();
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
 
 function platformOrigin(): string {
   const raw = process.env.PLATFORM_API_URL || "http://127.0.0.1:8889";
@@ -33,11 +93,23 @@ export async function proxyPlatformRequest(request: NextRequest, pathname: strin
   if (contentType && contentType !== "application/json") {
     return Response.json({ error: { code: "unsupported_media_type", message: "Only JSON requests are supported" } }, { status: 415 });
   }
-  const contentLength = Number(request.headers.get("content-length") || 0);
-  if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > 1024 * 1024) {
+  const maxBodyBytes = requestBodyLimit(pathname);
+  const contentLengthHeader = request.headers.get("content-length");
+  const contentLength = contentLengthHeader === null ? 0 : Number(contentLengthHeader);
+  if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxBodyBytes) {
     return Response.json({ error: { code: "request_too_large", message: "Platform request is too large" } }, { status: 413 });
   }
-  const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+  let body: string | undefined;
+  try {
+    body = request.method === "GET" || request.method === "HEAD"
+      ? undefined
+      : await readRequestBodyWithinLimit(request, maxBodyBytes);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return Response.json({ error: { code: "request_too_large", message: "Platform request is too large" } }, { status: 413 });
+    }
+    throw error;
+  }
   try {
     const response = await fetch(target, {
       method: request.method,

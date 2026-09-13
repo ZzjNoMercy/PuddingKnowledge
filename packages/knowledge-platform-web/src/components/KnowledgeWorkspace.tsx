@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { WikiAuthoring } from "./WikiAuthoring";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bell,
@@ -69,7 +70,7 @@ const sectionCopy: Record<WorkspaceSection, { eyebrow: string; title: string; de
   library: { eyebrow: "LIBRARY WORKSPACE", title: "知识库 / 资料库", description: "统一查看本地 Catalog 中的文档、Wiki、网页和结构化资产。" },
   search: { eyebrow: "KNOWLEDGE SEARCH", title: "知识库 / 搜索", description: "通过独立 Platform API 搜索真实本地知识，不经过 PuddingClaw 后端。" },
   sources: { eyebrow: "KNOWLEDGE SOURCES", title: "知识库 / 知识来源", description: "查看 Connector、同步来源与授权状态。" },
-  schema: { eyebrow: "WIKI & SEMANTIC", title: "知识库 / LLM Wiki", description: "查看 Wiki 与语义资产；编辑和发布将在独立 Authoring Runtime 接管后开放。" },
+  schema: { eyebrow: "WIKI & SEMANTIC", title: "知识库 / LLM Wiki", description: "查看 Wiki 与语义资产，生成、审查并发布知识补丁。" },
   imports: { eyebrow: "PROCESSING JOBS", title: "知识库 / 任务中心", description: "按 Job ID 查询独立 Platform 处理任务及其状态。" },
   analytics: { eyebrow: "KNOWLEDGE ANALYTICS", title: "智能问数", description: "查看数据库 Schema，并通过 Vanna Collection 生成受守卫的只读查询计划。" },
 };
@@ -132,7 +133,9 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
   const [assetEvidence, setAssetEvidence] = useState<ReturnType<typeof evidenceOf>>([]);
   const [assetLoading, setAssetLoading] = useState(false);
 
+  const refreshGeneration = useRef(0);
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     setLoading(true);
     setError("");
     try {
@@ -143,6 +146,7 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
         platformClient.listCollections({ spaceId: nextSpace || undefined }),
         platformClient.listAssets({ spaceId: nextSpace || undefined }),
       ]);
+      if (generation !== refreshGeneration.current) return;
       setSelectedSpace(nextSpace);
       setDiscovery({
         spaces,
@@ -150,14 +154,15 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
         assets: records(dataOf(assetsResult).assets),
       });
     } catch (reason) {
+      if (generation !== refreshGeneration.current) return;
       setError(errorMessage(reason));
       setDiscovery(EMPTY_DISCOVERY);
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) setLoading(false);
     }
   }, [selectedSpace]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); return () => { ++refreshGeneration.current; }; }, [refresh]);
 
   async function openAsset(asset: PortableRecord) {
     setSelectedAsset(asset);
@@ -239,7 +244,7 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
                 {section === "library" ? <Library assets={discovery.assets} onOpenAsset={openAsset} /> : null}
                 {section === "search" ? <SearchView spaceId={selectedSpace} onOpenAsset={openAsset} /> : null}
                 {section === "sources" ? <SourcesView spaceId={selectedSpace} /> : null}
-                {section === "schema" ? <SchemaView spaceId={selectedSpace} assets={discovery.assets} onOpenAsset={openAsset} /> : null}
+                {section === "schema" ? <SchemaView spaceId={selectedSpace} assets={discovery.assets} onOpenAsset={openAsset} onPublished={() => void refresh()} /> : null}
                 {section === "imports" ? <JobsView /> : null}
                 {section === "analytics" ? <AnalyticsView spaceId={selectedSpace} collections={discovery.collections} /> : null}
               </>
@@ -396,7 +401,7 @@ function SourcesView({ spaceId }: { spaceId: string }) {
   );
 }
 
-function SchemaView({ spaceId, assets, onOpenAsset }: { spaceId: string; assets: PortableRecord[]; onOpenAsset: (asset: PortableRecord) => void }) {
+function SchemaView({ spaceId, assets, onOpenAsset, onPublished }: { spaceId: string; assets: PortableRecord[]; onOpenAsset: (asset: PortableRecord) => void; onPublished: () => void }) {
   const [semantic, setSemantic] = useState<PortableRecord[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -407,6 +412,7 @@ function SchemaView({ spaceId, assets, onOpenAsset }: { spaceId: string; assets:
   const wiki = assets.filter((asset) => assetKind(asset).includes("wiki"));
   return (
     <div className="content-grid">
+      <WikiAuthoring key={spaceId} spaceId={spaceId} onPublished={onPublished} />
       <section className="card two-thirds"><CardHeader icon={BookOpen} title="已发布 Wiki" detail="当前 Catalog 中可查询的页面" />{wiki.length ? <AssetRows assets={wiki} onOpenAsset={onOpenAsset} compact /> : <EmptyState title="暂无 Wiki" detail="没有已发布的 Wiki Asset。" />}</section>
       <section className="card one-third"><CardHeader icon={Sparkles} title="语义资产" detail="独立 Semantic Registry" />{error ? <CapabilityNotice capability="Semantic Authoring Runtime" message={error} /> : semantic.length ? <RecordCards items={semantic} /> : <EmptyState icon={Sparkles} title="暂无语义资产" detail="当前 registry 中没有记录。" />}</section>
     </div>

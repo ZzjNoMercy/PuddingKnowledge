@@ -106,3 +106,36 @@ def test_rejects_simple_browser_post_and_reused_operation(tmp_path):
     committed=store.read();body['patch']['log_entry']='Different intent'
     assert api.post('/v1/wiki/authoring/apply',json=body).json()['status']=='error'
     assert store.read()==committed
+
+
+def test_context_returns_bounded_registered_raw_inventory(tmp_path):
+    owned,store,api=setup(tmp_path)
+    original_read=store.read()
+    store.raw.update({
+        'a.md': digest('a'), 'b.md': digest('b'), 'c.md': digest('c'),
+    })
+    # Keep the catalog commitment fixed while exercising inventory paging;
+    # inventory itself must be sourced from the registered raw map only.
+    store.read=lambda: original_read
+    first=api.post('/v1/wiki/authoring/context',json={'space_id':store.space_id,'raw_limit':2}).json()
+    assert first['status']=='ok'
+    assert first['data']['raw_inventory']==[
+        {'snapshot_path':'a.md','sha256':digest('a')},
+        {'snapshot_path':'b.md','sha256':digest('b')},
+    ]
+    assert first['data']['raw_next_after']=='b.md'
+    second=api.post('/v1/wiki/authoring/context',json={
+        'space_id':store.space_id,'raw_after':first['data']['raw_next_after'],'raw_limit':2,
+    }).json()
+    assert second['data']['raw_inventory']==[{'snapshot_path':'c.md','sha256':digest('c')}, {'snapshot_path':'source.md','sha256':store.raw['source.md']}]
+    assert second['data']['raw_next_after'] is None
+
+
+@pytest.mark.parametrize('body', [
+    {'raw_limit':0}, {'raw_limit':101}, {'raw_limit':True}, {'raw_after':1},
+])
+def test_context_rejects_invalid_raw_inventory_pagination(tmp_path,body):
+    owned,store,api=setup(tmp_path)
+    body={'space_id':store.space_id,**body}
+    result=api.post('/v1/wiki/authoring/context',json=body).json()
+    assert result['status']=='error'

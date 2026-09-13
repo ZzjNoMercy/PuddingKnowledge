@@ -81,6 +81,18 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export type WikiAuthoringAction =
+  | "context"
+  | "preview"
+  | "apply"
+  | "generate"
+  | "proposal"
+  | "abandon"
+  | "enqueue"
+  | "queue"
+  | "run_queue"
+  | "control_queue";
+
 export interface PlatformClient {
   listSpaces(options?: RequestOptions): Promise<QueryResult>;
   listCollections(options?: RequestOptions & { spaceId?: string }): Promise<QueryResult>;
@@ -95,6 +107,7 @@ export interface PlatformClient {
   search(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   documentRagQuery(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   wikiQuery(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
+  wikiAuthoring(action: WikiAuthoringAction, body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   tableQuery(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   query(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
   knowledgeQuery(body?: Record<string, unknown>, options?: RequestOptions): Promise<QueryResult>;
