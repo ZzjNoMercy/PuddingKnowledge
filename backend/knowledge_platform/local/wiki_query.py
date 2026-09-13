@@ -16,12 +16,17 @@ class PublishedWikiReader:
     async def search(self, *, query, space_id, limit):
         # Publications are visible only after their Catalog transaction commits.
         result = []
-        for asset in self.repository.list_assets(space_id=space_id):
+        snapshot=getattr(self.services,'search_snapshot',None)
+        try:
+            items=snapshot(space_id) if snapshot is not None else ((asset,None) for asset in self.repository.list_assets(space_id=space_id))
+        except (LookupError,ValueError) as error:
+            raise RetrievalProviderError('Published Wiki is unavailable') from error
+        for asset,content in items:
             uri = str(asset.get('source_uri') or '')
-            if asset.get('kind') != 'wiki_page' or asset.get('source_type') != 'local_wiki_compilation':
+            if asset.get('kind') != 'wiki_page' or asset.get('source_type') not in getattr(self.services, 'source_types', ('local_wiki_compilation',)):
                 continue
             try:
-                content = self.services.read_published(uri)
+                if content is None:content = self.services.read_published(uri)
             except (LookupError, ValueError) as error:
                 raise RetrievalProviderError('Published Wiki is unavailable') from error
             digest = 'sha256:' + hashlib.sha256(content).hexdigest()

@@ -10,6 +10,7 @@ import json
 import re
 import signal
 import socket
+import sqlite3
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from urllib.parse import urlparse
@@ -229,6 +230,18 @@ def main() -> int:
                                  "wiki_provider": published, "wiki_blob_reader": published}
             except (ValueError, OSError, TypeError):
                 parser.exit(2, "Local Wiki configuration or owned state is invalid\n")
+        if owned is not None and owned.get("schema_bundle") is not None:
+            from knowledge_platform.local.wiki_authoring import WikiAuthoringStore
+            from knowledge_platform.local.wiki_authoring_projection import AuthoringReaderServices
+            from knowledge_platform.local.wiki_query import PublishedWikiReader
+            with sqlite3.connect(catalog) as authoring_db:
+                has_authoring = authoring_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_wiki_authoring_state'").fetchone()
+                authoring_space = owned.get("schema_space_id", owned.get("space_id"))
+                has_authoring = has_authoring and authoring_db.execute('SELECT 1 FROM knowledge_wiki_authoring_state WHERE space_id=?',(authoring_space,)).fetchone()
+            if has_authoring:
+                authoring=WikiAuthoringStore.from_owned_workspace(owned)
+                published=PublishedWikiReader(SqliteCatalogQueryRepository(catalog),AuthoringReaderServices(authoring,services if wiki_config else None))
+                wiki_services.update(wiki_provider=published,wiki_blob_reader=published)
         principal = Principal(subject_id="knowledge-local", scopes=(
             "knowledge.list", "knowledge.read", "knowledge.query", "knowledge.search",
             "knowledge.space:space_kb_default",
