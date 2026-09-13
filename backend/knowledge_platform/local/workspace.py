@@ -23,6 +23,7 @@ from knowledge_platform.wiki.local import _open_source
 _MANIFEST = "workspace.json"
 _LOCK = ".workspace.lock"
 _INITIALIZING = ".initializing"
+_FREEZE = ".workspace-freeze-v1.json"
 _PROCESSING = "processing"
 _SQLITE_AUXILIARY = {"catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal",
     "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal"}
@@ -105,13 +106,15 @@ def _open_lock(state_dir: Path) -> int:
     lock_path = state_dir / _LOCK
     if lock_path.exists() and (lock_path.is_symlink() or not lock_path.is_file()):
         raise WorkspaceError("state-dir lock is not a regular file")
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         information = os.fstat(descriptor)
-        if not stat.S_ISREG(information.st_mode):
-            raise WorkspaceError("state-dir lock is not a regular file")
-        os.chmod(lock_path, 0o600)
+        if not stat.S_ISREG(information.st_mode) or information.st_nlink != 1 or information.st_uid != os.getuid() or information.st_mode & 0o077:
+            raise WorkspaceError("state-dir lock must be private, owned and unlinked")
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current=lock_path.stat(follow_symlinks=False)
+        if (information.st_dev,information.st_ino)!=(current.st_dev,current.st_ino):
+            raise WorkspaceError("state-dir lock changed during admission")
     except (OSError, WorkspaceError) as error:
         os.close(descriptor)
         if isinstance(error, WorkspaceError):
@@ -289,6 +292,13 @@ class PersistentWorkspace:
         os.close(self.lock_fd)
 
 
+def _check_not_frozen(root):
+    for name in (_FREEZE, _FREEZE + ".part"):
+        try:(root/name).lstat()
+        except FileNotFoundError:continue
+        raise WorkspaceError("state-dir is persistently frozen")
+
+
 def open_persistent_workspace(
     state_dir: Path | str,
     *,
@@ -313,6 +323,7 @@ def open_persistent_workspace(
     if root.exists():
         if root.is_symlink() or not root.is_dir():
             raise WorkspaceError("state-dir must be a real directory")
+        _check_not_frozen(root)
         if any(entry.name not in allowed for entry in root.iterdir()):
             raise WorkspaceError("state-dir contains unexpected or partial entries")
     else:
@@ -320,6 +331,7 @@ def open_persistent_workspace(
     os.chmod(root, 0o700)
     lock_fd = _open_lock(root)
     try:
+        _check_not_frozen(root)
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
         persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", "retrieval-traces.sqlite3")]

@@ -1,5 +1,6 @@
 """Durable generation admission; execution authority remains the proposal claim."""
 import time
+import os
 import threading
 from ..wiki.patch import canonical,digest
 from ..wiki.json_input import decode_request
@@ -116,17 +117,33 @@ class WikiAuthoringQueue:
 
 
 class WikiQueueWorker:
-    def __init__(self,queue,principal):
+    def __init__(self,queue,principal,*,workspace_lock_fd=None):
         self.queue,self.principal=queue,principal
+        self._source_lock_fd=workspace_lock_fd
+        self._workspace_fd=None
         self.stop_event=threading.Event();self.error=None
         self.thread=threading.Thread(target=self._run,name='knowledge-wiki-queue',daemon=True)
         queue.worker=self
     def _run(self):
-        while not self.stop_event.is_set():
-            try:self.queue.run_queue(self.principal,{'space_id':self.queue.store.space_id})
-            except Exception:
-                self.error='queue_worker_unavailable';return
-            self.stop_event.wait(1)
-    def start(self):self.thread.start()
-    def close(self):self.stop_event.set();self.thread.join(1)
+        try:
+            while not self.stop_event.is_set():
+                try:self.queue.run_queue(self.principal,{'space_id':self.queue.store.space_id})
+                except Exception:
+                    self.error='queue_worker_unavailable';return
+                self.stop_event.wait(1)
+        finally:
+            # A bounded close may return before the model settles. Retain the
+            # same flock open-file description until the last worker write ends.
+            if self._workspace_fd is not None:
+                os.close(self._workspace_fd);self._workspace_fd=None
+    def start(self):
+        if self.thread.ident is not None:raise RuntimeError('Queue worker already started')
+        if self._source_lock_fd is not None:self._workspace_fd=os.dup(self._source_lock_fd)
+        try:self.thread.start()
+        except BaseException:
+            if self._workspace_fd is not None:os.close(self._workspace_fd);self._workspace_fd=None
+            raise
+    def close(self):
+        self.stop_event.set()
+        if self.thread.ident is not None:self.thread.join(1)
     def status(self):return {'enabled':True,'running':self.thread.is_alive(),'error':self.error}
