@@ -32,6 +32,8 @@ class WikiAuthoringAdmin:
         self.evidence_root=Path(evidence_root)
         from .wiki_authoring_generation import WikiAuthoringGeneration
         self.generation=WikiAuthoringGeneration(self,model)
+        from .wiki_authoring_queue import WikiAuthoringQueue
+        self.queue_service=WikiAuthoringQueue(self)
 
     def authorize(self, principal, space_id):
         scopes=set(principal.scopes)
@@ -87,3 +89,12 @@ class WikiAuthoringAdmin:
 
     def abandon(self, principal, request):
         return self.generation.abandon(principal,request)
+
+    def enqueue(self, principal, request):
+        return self.queue_service.enqueue(principal,request)
+
+    def queue(self, principal, request):
+        return self.queue_service.queue(principal,request)
+
+    def run_queue(self, principal, request):
+        return self.queue_service.run_queue(principal,request)

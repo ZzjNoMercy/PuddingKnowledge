@@ -74,11 +74,14 @@ def main() -> int:
     parser.add_argument("--file-config", type=Path, help="explicit file bindings and parser registry; requires state-dir")
     parser.add_argument("--feishu-config", type=Path, help="explicit Feishu sources and Vault credential references; requires state-dir")
     parser.add_argument("--capture-config", type=Path, help="explicit public web capture policy; requires state-dir")
+    parser.add_argument("--wiki-authoring-worker", action="store_true", help="explicitly consume due owned Wiki proposal admissions")
     parser.add_argument("--wiki-authoring-model-config", type=Path, help="explicit endpoint/model/credential-env for multi-page proposals; requires --wiki-authoring")
     parser.add_argument("--wiki-authoring", action="store_true", help="explicitly enable owned schema Wiki patch administration and writer handoff")
     parser.add_argument("--wiki-config", type=Path, help="explicit Wiki source bindings and HTTP model configuration; requires state-dir")
     parser.add_argument("--instance-id", help="supervisor-owned runtime instance identity")
     args = parser.parse_args()
+    if args.wiki_authoring_worker and not args.wiki_authoring_model_config:
+        parser.error("--wiki-authoring-worker requires --wiki-authoring-model-config")
     if args.wiki_authoring_model_config and not args.wiki_authoring:
         parser.error("--wiki-authoring-model-config requires --wiki-authoring")
     if args.wiki_authoring and args.state_dir is None:
@@ -312,9 +315,16 @@ def main() -> int:
                        "files_configured": files is not None,
                        "packages_configured": packages is not None, "index_configured": index_config is not None,
                        "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
+        queue_worker = None
+        if args.wiki_authoring_worker:
+            from knowledge_platform.local.wiki_authoring_queue import WikiQueueWorker
+            queue_worker = WikiQueueWorker(wiki_services["wiki_authoring"].queue_service, principal)
+            queue_worker.start()
         try:
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])
         finally:
+            if queue_worker is not None:
+                queue_worker.close()
             ready.unlink(missing_ok=True)
             if database_close is not None:
                 database_close()

@@ -121,6 +121,7 @@ class WikiAuthoringGeneration:
             if previous is not None:
                 if previous[0]!=request_json:raise ValueError('Generation identity reused')
                 return self._result(op,previous)
+            self.admin.queue_service.check_claim(db,who,request)
             if self.store._read(db)[0]!=context['revision']:raise ValueError('Stale generation context')
             receipt=digest(canonical([self.store.space_id,op,*values]))
             db.execute(f'INSERT INTO {TABLE} VALUES (?,?,?,?,?,?,?,?)',(self.store.space_id,op,*values,receipt))
