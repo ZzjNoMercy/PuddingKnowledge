@@ -13,11 +13,11 @@ import re
 import tempfile
 
 from . import wiki_archive as files, sqlite_reverse_delta as sql
-from .core_catalog_reverse import build_core_catalog_reverse, _rows
+from .core_catalog_reverse import build_core_catalog_reverse, _rows, _projection
 from ..local import writer_authority as control
 from ..local.workspace_freeze import _sync_directory
 
-FORMAT = 'puddingknowledge-document-reverse/v1'
+FORMAT = 'puddingknowledge-document-reverse/v2'
 EXTENSIONS = {'text/markdown': '.md', 'text/plain': '.txt', 'application/pdf': '.pdf',
               'text/csv': '.csv', 'application/json': '.json', 'text/html': '.html'}
 
@@ -79,9 +79,37 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         if asset['content_digest'] != 'sha256:' + fact['sha256'] or asset['revision'] != asset['content_digest']:
             raise ValueError('Body digest or content revision mismatch')
         extension = EXTENSIONS.get(asset['mime_type'], '.bin')
-        name = fact['sha256'] + extension
+        allowed_suffixes = {extension} | ({'.markdown', '.mdx'} if asset['mime_type'] == 'text/markdown' else set())
+        name = relative if Path(relative).suffix.lower() in allowed_suffixes else relative + extension
         facts[asset_id] = {'input_relative': relative, 'output_relative': 'bodies/'+name, **fact}
         sources[name] = source
+    from .document_dependencies import collect_document_dependencies
+    primary = {}
+    for asset, fact in facts.items():
+        relative, mime_type = fact['input_relative'], documents[asset]['mime_type']
+        if relative in primary and primary[relative] != mime_type:
+            raise ValueError('Conflicting document MIME bindings')
+        primary[relative] = mime_type
+    graph = collect_document_dependencies(root, primary)
+    expected = dict(graph['files'])
+    sources = {name: root/name for name in expected}
+    for fact in facts.values():
+        actual = {key: fact[key] for key in ('sha256', 'size_bytes')}
+        if graph['files'].get(fact['input_relative']) != actual:
+            raise ValueError('Primary body changed during dependency discovery')
+        name = fact['output_relative'].split('/', 1)[1]
+        if name in expected and expected[name] != actual:
+            raise ValueError('Primary body alias collides with dependency')
+        expected[name] = actual
+        sources[name] = root/fact['input_relative']
+    expected_directories = set()
+    for name in expected:
+        parent = Path(name).parent
+        while parent != Path('.'):
+            expected_directories.add(parent.as_posix()); parent = parent.parent
+    if set(expected) & expected_directories or len(expected) + len(expected_directories) > files.MAX_FILES or sum(fact['size_bytes'] for fact in expected.values()) > files.MAX_TOTAL:
+        raise ValueError('Dependency output layout exceeds budget or overlaps')
+    inventory = {'files': expected, 'directories': sorted(expected_directories)}
     if any(sql._file_digest(path) != digest for path, digest in zip(paths, input_digests)):
         raise ValueError("Catalog changed after body inspection")
     if not stage.exists():
@@ -91,7 +119,8 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         lease_identity = os.fstat(lease)
         plan = {'format': FORMAT, 'source_revision': source_revision,
                 'inputs': [{'path': str(path), 'sha256': digest} for path, digest in zip(paths, input_digests)],
-                'body_root': str(root), 'bodies': facts, 'output_identity': stage_identity}
+                'body_root': str(root), 'bodies': facts, 'dependency_graph': graph,
+                'output_inventory': inventory, 'output_identity': stage_identity}
         base = {'format': FORMAT, 'plan': plan, 'state': 'copying', 'activation_allowed': False,
                 'rollback_completed': False, 'credential_continuity_verified': False,
                 'indexes_rebuilt': False, 'installation_path_rebound': False}
@@ -100,7 +129,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         marker = stage/'manifest.json'; previous = None
         if marker.exists() or marker.is_symlink():
             previous = _json_file(marker)
-            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256'} if previous.get('state') == 'verified_inactive_documents' else set())
+            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256','derived_metadata_invalidation'} if previous.get('state') == 'verified_inactive_documents' else set())
             if set(previous) != expected_keys or previous['state'] not in ('copying','verified_inactive_documents') or any(not sql._json(previous[key]) == sql._json(value) for key,value in base.items() if key != 'state'):
                 raise ValueError('Reverse plan changed')
         elif any(p.name != '.writer-authority.lock' for p in stage.iterdir()):
@@ -117,19 +146,25 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 files._inventory(entry,private=True); continue
             raise ValueError('Unknown reverse output entry')
         body_dir = stage/'bodies'
-        expected = {fact['output_relative'].split('/',1)[1]: {key:fact[key] for key in ('sha256','size_bytes')} for fact in facts.values()}
         if complete:
-            if files._inventory(body_dir,private=True) != {'files':expected,'directories':[]}:
+            if files._inventory(body_dir,private=True) != inventory:
                 raise ValueError('Completed reverse bodies changed')
             if files._read(stage/'catalog.sqlite3',private=True)[1]['sha256'] != previous['catalog_sha256'] or (stage/'catalog.sqlite3.reverse-part').exists():
                 raise ValueError('Completed reverse Catalog changed')
         if not body_dir.exists():
             body_dir.mkdir(mode=0o700); _sync_directory(stage)
         files._check(body_dir.lstat(),directory=True,private=True)
-        for entry in body_dir.iterdir():
-            if entry.name not in expected and not (entry.name.endswith('.reverse-part') and entry.name.removesuffix('.reverse-part') in expected):
+        partial = files._inventory(body_dir, private=True)
+        if not set(partial['directories']) <= expected_directories:
+            raise ValueError('Unknown reverse body directory')
+        for name in partial['files']:
+            if name not in expected and not (name.endswith('.reverse-part') and name.removesuffix('.reverse-part') in expected):
                 raise ValueError('Unknown reverse body')
-            files._check(entry.lstat(),private=True)
+        for directory in sorted(expected_directories, key=lambda name: (len(Path(name).parts), name)):
+            destination = body_dir/directory
+            if not destination.exists():
+                destination.mkdir(mode=0o700); _sync_directory(destination.parent)
+            files._check(destination.lstat(), directory=True, private=True)
         if not complete:
             for name,fact in expected.items():
                 target = body_dir/name
@@ -139,16 +174,19 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 else:
                     _copy(sources[name],target,fact)
                     if _after_copy:_after_copy(name)
-            if files._inventory(body_dir,private=True) != {'files':expected,'directories':[]}:
+            if files._inventory(body_dir,private=True) != inventory:
                 raise ValueError('Reverse body inventory mismatch')
             from .document_reverse_plan import plan_document_reverse
             identities = {}
+            invalidation = {}
             def transform(legacy,before,after):
                 body_bindings = {asset: {'storage_path':str(stage/fact['output_relative']),
                                         'sha256':fact['sha256'],'size_bytes':fact['size_bytes']} for asset,fact in facts.items()}
                 prepared, baseline, normalized, mapping = plan_document_reverse(legacy,before,after,source_revision,body_bindings)
-                identities.update(mapping)
-                return prepared,baseline,normalized
+                from .document_derived_metadata import invalidate_derived_metadata
+                prepared, normalized, invalidated = invalidate_derived_metadata(prepared, normalized, mapping, body_bindings)
+                identities.update(mapping); invalidation.update(invalidated)
+                return prepared, _projection(prepared, source_revision), normalized
             with tempfile.TemporaryDirectory(prefix='.reverse-work-',dir=stage) as temporary:
                 candidate=Path(temporary)/'catalog.sqlite3'
                 receipt=build_core_catalog_reverse(*paths,candidate,source_revision=source_revision,_document_transform=transform)
@@ -160,17 +198,18 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 else:_copy(candidate,target,fact)
                 if _after_copy:_after_copy('catalog.sqlite3')
             result={**base,'state':'verified_inactive_documents','core_receipt':receipt,
-                    'identity_map':identities,'catalog_sha256':fact['sha256']}
+                    'identity_map':identities,'catalog_sha256':fact['sha256'],
+                    'derived_metadata_invalidation':invalidation}
         else:
             result=previous
         for path,digest in zip(paths,input_digests):
             sql._path(path)
             if sql._file_digest(path) != digest:
                 raise ValueError('Reverse Catalog input changed')
-        for asset,fact in facts.items():
-            if files._read(root/fact['input_relative'])[1] != {key:fact[key] for key in ('sha256','size_bytes')}:
-                raise ValueError('Reverse body input changed')
-        if files._inventory(body_dir,private=True) != {'files':expected,'directories':[]} or files._read(stage/'catalog.sqlite3',private=True)[1]['sha256'] != result['catalog_sha256']:
+        for relative, fact in graph['files'].items():
+            if files._read(root/relative)[1] != fact:
+                raise ValueError('Reverse dependency input changed')
+        if files._inventory(body_dir,private=True) != inventory or files._read(stage/'catalog.sqlite3',private=True)[1]['sha256'] != result['catalog_sha256']:
             raise ValueError('Reverse output changed before commit')
         current=(stage/'.writer-authority.lock').lstat()
         if control.identity(stage)!=stage_identity or (current.st_dev,current.st_ino)!=(lease_identity.st_dev,lease_identity.st_ino):
@@ -180,7 +219,10 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         if not complete:control._replace(marker,result)
         return {'format':FORMAT,'state':result['state'],'plan_sha256':control.digest(plan),
                 'identity_map':result['identity_map'],'document_count':len(facts),'catalog_sha256':result['catalog_sha256'],
-                'idempotent':complete,'document_bodies_materialized':True,'activation_allowed':False,
+                'idempotent':complete,'document_bodies_materialized':True,
+                'relative_dependencies_materialized':True,'dependency_file_count':len(graph['files']),
+                'derived_metadata_invalidation':result['derived_metadata_invalidation'],
+                'external_references_validated':False,'metadata_attachment_paths_rebound':False,'activation_allowed':False,
                 'rollback_completed':False,'credential_continuity_verified':False,
                 'indexes_rebuilt':False,'installation_path_rebound':False}
 

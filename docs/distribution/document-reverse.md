@@ -1,4 +1,4 @@
-# Document primary-body reverse materialization
+# Document reverse materialization v2
 
 An independent Knowledge installation now exposes:
 
@@ -20,8 +20,11 @@ must be suspended and export obtained separately. Inspection and final input
 commitments use the same database hashes. Source SQLite files are byte-read into
 private copies rather than opened in place.
 
-The tool materializes primary bodies into private `bodies/<digest>.<extension>`
-files and produces an actual old-schema `catalog.sqlite3`. Existing document
+The tool materializes primary bodies and their reachable relative file dependencies
+under private `bodies/<snapshot-relative-path>` locations, preserving relative
+links, and produces an actual old-schema `catalog.sqlite3`. A primary whose
+suffix does not match its MIME type receives a readable alias with the expected
+extension; the original relative file is also retained for inbound references. Existing document
 rows retain nonprojected source fields; content digest, size and storage_path
 bind the new files. New native document Asset IDs receive deterministic bounded
 legacy IDs recorded in `identity_map`. Old source URI/provenance is validated
@@ -45,13 +48,32 @@ repair. Unknown output entries and unsafe links reject. Private interrupted
 `.reverse-work-*` directories are retained diagnostically and are not committed
 candidate data. Source and output are rechecked before final manifest publication.
 
+The v2 plan additionally commits the dependency graph and complete output tree.
+Markdown images, links and supported static HTML reference attributes are parsed;
+UTF-8 percent paths are decoded after splitting query/fragment so encoded filename
+characters remain part of the file. Local parent traversal is allowed only within
+the approved snapshot root. Reached Markdown/HTML files are followed transitively;
+cycles and file/edge/byte counts are bounded. Code examples are not rendered links.
+Missing, escaping or linked files reject. Remote references are only hashed and
+never fetched. Dynamic/base-changing HTML, CSS resource traversal and ambiguous
+data-URL srcset are unsupported and reject. Binary files are preserved as bytes;
+embedded binary references and arbitrary script behavior are not traversed.
+
+For every relocated document, old `llamaindex_chunks` and `vector_index` metadata
+are removed for rebuild. Markdown SHA-256 is recomputed from the verified primary
+body. The receipt commits old/current derived-field digests and invalidation
+reasons, retaining original values only in the immutable input snapshots. This
+does not rebuild any index or grant activation. Other user metadata and secrets
+remain intact. v1 output layouts remain immutable and must be processed with the
+matching v1 tool; v2 refuses to adopt their incompatible plan.
+
 This is `verified_inactive_documents`. The candidate's absolute storage paths
 make its primary documents readable in this exact directory; moving it requires
-an audited path-rebinding step. It is not a complete relocated Claw Home. Existing
-secondary attachment/image/chunk references and vector/search indices are not
-rebuilt. Wiki, other Catalog domains, credential continuity, unified installation
-revision and audited thaw remain open. Primary body preservation is not evidence
-that external/secondary references still work. `indexes_rebuilt`,
+an audited path-rebinding step. It is not a complete relocated Claw Home. Relative images/linked files are materialized, but existing
+absolute attachment paths inside Catalog metadata are not rebound. Vector/search
+indices and chunk metadata require rebuild before installation activation. Wiki, other Catalog domains, credential continuity, unified installation
+revision and audited thaw remain open. Graph closure proves the supported relative references only; external URLs,
+metadata attachment paths and binary embedded references are not covered. `indexes_rebuilt`,
 `installation_path_rebound`, activation and rollback completion stay false.
 
 The cooperative offline/POSIX contract, existing SQLite schema restrictions and
