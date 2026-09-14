@@ -221,7 +221,7 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
             return load_migrated_wiki_workspace(state_dir, manifest)
         except (ValueError, OSError, RuntimeError) as error:
             raise WorkspaceError(str(error)) from error
-    if manifest.get("version") == 2 and manifest.get("kind") == "migrated_documents":
+    if manifest.get("version") in (2, 3) and manifest.get("kind") == "migrated_documents":
         for name in _SQLITE_AUXILIARY:
             auxiliary = state_dir / name
             if auxiliary.exists() or auxiliary.is_symlink():

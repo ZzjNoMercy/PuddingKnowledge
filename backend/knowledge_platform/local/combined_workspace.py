@@ -110,8 +110,9 @@ def _source_commitments(document, wiki):
         raw = documents_verifier._read(document / "manifest.json", 1024 * 1024)
         manifest = documents_verifier._json(raw)
         bindings = documents_verifier._bindings(manifest.get("asset_bindings"))
+        originals = documents_verifier._original_bindings(manifest.get("plan", {}).get("original_bindings", {}), bindings)
         files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != {"catalog.sqlite3", *bindings.values()}:
+        if not isinstance(files, dict) or set(files) != {"catalog.sqlite3", *bindings.values(), *originals.values()}:
             raise CombinedWorkspaceError("document candidate inventory is invalid")
         total = 0
         for relative, expected in files.items():
@@ -191,7 +192,7 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
     dm, wm = manifest["document_manifest"], manifest["wiki_manifest"]
     if not isinstance(dm, dict) or not isinstance(wm, dict):
         raise CombinedWorkspaceError("nested workspace manifests are invalid")
-    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2,)), (wm, (3, 5, 6, 7)))):
+    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2, 3)), (wm, (3, 5, 6, 7)))):
         raise CombinedWorkspaceError("nested Catalog binding is invalid")
     try:
         documents = load_migrated_workspace(root, dm)

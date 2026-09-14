@@ -1,4 +1,4 @@
-# Document reverse materialization v3
+# Document reverse materialization v4
 
 An independent Knowledge installation now exposes:
 
@@ -64,8 +64,8 @@ are removed for rebuild. Markdown SHA-256 is recomputed from the verified primar
 body. The receipt commits old/current derived-field digests and invalidation
 reasons, retaining original values only in the immutable input snapshots. This
 does not rebuild any index or grant activation. Other user metadata and secrets
-remain intact. Prior v1/v2 outputs remain immutable and require their matching
-tool; v3 refuses to adopt incompatible plans.
+remain intact. Prior v1/v2/v3 outputs remain immutable and require their matching
+tool; v4 refuses to adopt incompatible plans.
 
 This is `verified_inactive_documents`. The candidate's absolute storage paths
 make its primary documents readable in this exact directory; moving it requires
@@ -106,13 +106,16 @@ actual bytes; historical source claims remain historical and need not match a
 legitimately updated current attachment. Initial facts must match dependency graph
 inspection, and the source directory inventory is rechecked before completion.
 
-The v3 plan commits these bindings and the receipt reports selector counts and
+The v4 plan commits these bindings and the receipt reports selector counts and
 identities without raw paths. `known_attachment_filesystem_paths_rebound=true`
 only covers the selectors above. `metadata_attachment_paths_rebound=false` remains
 explicit because virtual routes and other metadata fields are installation-owned.
 
-Legacy converted PDFs require a separate representation contract: their
+Legacy converted PDFs use an explicit two-representation contract: their
 `content_sha256` can identify the original PDF while `storage_path`, MIME and size
-identify parsed Markdown. This version does not resolve that mismatch or rebind
-legacy `source_path`. Its synthetic original-file fixture proves attachment bytes
-and selected paths, not actual PDF-document migration or rollback readiness.
+identify parsed Markdown. For converted PDFs the native Asset digest and revision identify Markdown; the
+legacy content hash retains original PDF identity. Both files require verified
+bindings. Reverse materialization restores source_path and metadata.original_path
+to the verified original file, while storage_path, size and markdown_sha256 bind
+the verified Markdown. Existing updates and newly created native PDFs follow this
+contract. Virtual routes and full installation rollback readiness remain open.

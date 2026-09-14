@@ -17,7 +17,7 @@ from .core_catalog_reverse import build_core_catalog_reverse, _rows, _projection
 from ..local import writer_authority as control
 from ..local.workspace_freeze import _sync_directory
 
-FORMAT = 'puddingknowledge-document-reverse/v3'
+FORMAT = 'puddingknowledge-document-reverse/v4'
 EXTENSIONS = {'text/markdown': '.md', 'text/plain': '.txt', 'application/pdf': '.pdf',
               'text/csv': '.csv', 'application/json': '.json', 'text/html': '.html'}
 

@@ -96,7 +96,21 @@ def prepare_document_reverse(
         if native in verified_body_bindings:
             binding = _binding(native, verified_body_bindings)
             row = old_docs[document_id]
-            row["content_sha256"] = binding["sha256"]
+            from ..catalog.document_representations import legacy_document_representation
+            representation = legacy_document_representation(row)
+            if representation:
+                current = next(a for a in after['knowledge_assets'] if a['id'] == native)
+                metadata_now = current.get('metadata_json') or {}
+                if metadata_now.get('mode') != 'multimodal_pdf' or current.get('source_type') != row['source_type'] or current.get('mime_type') != 'text/markdown':
+                    raise ValueError('PDF representation type cannot be implicitly changed')
+                row['doc_metadata']['markdown_sha256'] = binding['sha256']
+                row['doc_metadata']['original_sha256'] = metadata_now.get('original_sha256')
+                row['doc_metadata']['original_path'] = metadata_now.get('original_path')
+                row['source_path'] = metadata_now.get('original_path')
+                row['content_sha256'] = metadata_now.get('original_sha256')
+                legacy_document_representation(row)
+            else:
+                row["content_sha256"] = binding["sha256"]
             row["size_bytes"] = binding["size_bytes"]
             row["storage_path"] = binding["storage_path"]
 
@@ -131,6 +145,13 @@ def prepare_document_reverse(
             raise ValueError("New document has invalid identity fields")
         if asset.get("description") not in (None, "") or asset.get("permissions_json") not in (None, {}):
             raise ValueError("Unsupported new document fields")
+        if base['source_type'].startswith('pdf_') or (asset.get('metadata_json') or {}).get('mode') == 'multimodal_pdf':
+            from ..catalog.document_representations import legacy_document_representation
+            base['doc_metadata'] = copy.deepcopy(asset.get('metadata_json') or {})
+            base['doc_metadata']['markdown_sha256'] = binding['sha256']
+            base['source_path'] = base['doc_metadata'].get('original_path')
+            base['content_sha256'] = base['doc_metadata'].get('original_sha256')
+            legacy_document_representation(base)
         prepared["knowledge_documents"].append(base)
 
     # Add newly introduced spaces to the legacy side before deriving the

@@ -15,7 +15,7 @@ from knowledge_platform.catalog.rehearsal_runner import run_core_catalog_rehears
 from knowledge_platform.distribution.sqlite_reverse_delta import _path as _database_path, _file_digest
 from knowledge_platform.distribution.catalog_snapshot import _path, _identity
 
-FORMAT = 'puddingknowledge-document-migration/v1'
+FORMAT = 'puddingknowledge-document-migration/v2'
 TOKEN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$')
 MAX_FILE = 32 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
@@ -147,7 +147,7 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
 
 
 def prepare_document_migration(source_catalog, source_files_root, bindings, output, *,
-                               installation_id='document-migration', source_revision='legacy-1', _after_publish=None):
+                               installation_id='document-migration', source_revision='legacy-1', original_bindings=None, _after_publish=None):
     source = _database_path(source_catalog)
     source_identity = _identity(source)
     root, output = _path(source_files_root), _path(output)
@@ -157,7 +157,10 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
         raise ValueError('Invalid migration identity')
     if not isinstance(bindings, dict) or len(bindings) > 5000:
         raise ValueError('Invalid document bindings')
-    for key, relative in bindings.items():
+    original_bindings = {} if original_bindings is None else original_bindings
+    if not isinstance(original_bindings, dict) or len(original_bindings) > 5000:
+        raise ValueError('Invalid original document bindings')
+    for key, relative in [*bindings.items(), *original_bindings.items()]:
         if not isinstance(key, str) or not TOKEN.fullmatch(key) or not isinstance(relative, str) or not relative:
             raise ValueError('Invalid document binding')
         p = Path(relative)
@@ -172,16 +175,26 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
         target_engine = create_engine(f'sqlite:///{target_path}')
         try:
             with src_engine.connect() as src:
-                rows = src.execute(text('SELECT id, content_sha256, source_path, storage_path FROM knowledge_documents')).mappings().all()
+                rows = src.execute(text('SELECT * FROM knowledge_documents')).mappings().all()
                 ids = [str(row['id']) for row in rows]
                 if len(ids) != len(set(ids)) or set(ids) != set(bindings):
                     raise ValueError('Every document requires exactly one binding')
-                bodies = {}; assets = {}; total = 0; facts = {}
+                from ..catalog.document_representations import legacy_document_representation
+                representations = {}
+                for raw in rows:
+                    row = dict(raw)
+                    if isinstance(row.get('doc_metadata'), str): row['doc_metadata'] = json.loads(row['doc_metadata'])
+                    representation = legacy_document_representation(row)
+                    if representation: representations[str(row['id'])] = representation
+                if set(original_bindings) != set(representations):
+                    raise ValueError('Every converted PDF requires exactly one original binding')
+                bodies = {}; assets = {}; total = 0; facts = {}; original_assets = {}
                 for row in rows:
                     doc_id = str(row['id']); body = _read(root / bindings[doc_id]); total += len(body)
                     if total > MAX_TOTAL: raise ValueError('Document migration exceeds budget')
                     digest = _digest(body)
-                    expected = str(row['content_sha256'] or '')
+                    representation = representations.get(doc_id)
+                    expected = representation['body_sha256'] if representation else str(row['content_sha256'] or '')
                     if not expected.startswith('sha256:'): expected = 'sha256:' + expected
                     if digest != expected: raise ValueError('Document content digest mismatch')
                     relative = 'blobs/' + digest.removeprefix('sha256:')
@@ -189,31 +202,42 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                     asset_id = f"asset_{doc_id}_{hashlib.sha256(source_revision.encode()).hexdigest()[:12]}"
                     assets[asset_id] = relative
                     facts[doc_id] = {'relative_path': bindings[doc_id], 'digest': digest}
+                    if representation:
+                        if type(row.get('size_bytes')) is not int or row['size_bytes'] != len(body): raise ValueError('PDF Markdown size mismatch')
+                        if bindings[doc_id] == original_bindings[doc_id]: raise ValueError('PDF representations must have distinct bindings')
+                        original = _read(root/original_bindings[doc_id]); total += len(original)
+                        if total > MAX_TOTAL: raise ValueError('Document migration exceeds budget')
+                        original_digest = _digest(original)
+                        if original_digest != 'sha256:'+representation['original_sha256']: raise ValueError('Original PDF digest mismatch')
+                        original_relative = 'blobs/'+representation['original_sha256']
+                        bodies[original_relative] = original; original_assets[asset_id] = original_relative
+                        facts[doc_id]['original'] = {'relative_path':original_bindings[doc_id], 'digest':original_digest}
                 plan = {'format': FORMAT, 'source_catalog_digest': source_digest,
                         'source_revision': source_revision, 'installation_id': installation_id,
-                        'document_bindings_digest': _digest(_encode(facts))}
+                        'document_bindings_digest': _digest(_encode(facts)), 'original_bindings': original_assets}
                 verified_references = {}
                 for row in rows:
                     for field in ('source_path', 'storage_path'):
                         if row[field]: verified_references.setdefault(str(row[field]), set()).add(str(row['id']))
                 def references_verified(reference):
                     ids = verified_references.get(reference, ())
-                    return bool(ids) and all(_digest(_read(root / facts[doc_id]['relative_path'])) == facts[doc_id]['digest'] for doc_id in ids)
+                    return bool(ids) and all(all(_digest(_read(root/f['relative_path'])) == f['digest'] for f in [facts[doc_id], *([facts[doc_id]['original']] if 'original' in facts[doc_id] else [])]) for doc_id in ids)
                 def validate_catalog(path):
                     _identity(_database_path(path))
                     engine = create_engine(f'sqlite:///file:{quote(str(path), safe="/")}?mode=ro&immutable=1&uri=true')
                     try:
                         with engine.connect() as existing:
-                            verified = run_core_catalog_rehearsal(src, existing, installation_id=installation_id, source_revision=source_revision, target_revision='document-import-v1', active_revision=source_revision, file_reference_checker=references_verified)
+                            verified = run_core_catalog_rehearsal(src, existing, installation_id=installation_id, source_revision=source_revision, target_revision='document-import-v2', active_revision=source_revision, file_reference_checker=references_verified)
                             if not all(verified.report.checks.values()): raise ValueError('Existing Catalog does not match source')
                     finally: engine.dispose()
                 def verify_source():
                     if _identity(_database_path(source)) != source_identity or 'sha256:' + _file_digest(source) != source_digest: raise ValueError('Source changed during migration')
-                    for fact in facts.values():
-                        if _digest(_read(root / fact['relative_path'])) != fact['digest']: raise ValueError('Document changed during migration')
+                    for body_fact in facts.values():
+                        for fact in [body_fact, *([body_fact['original']] if 'original' in body_fact else [])]:
+                            if _digest(_read(root / fact['relative_path'])) != fact['digest']: raise ValueError('Document changed during migration')
                 with target_engine.begin() as target:
                     result = run_core_catalog_rehearsal(src, target, installation_id=installation_id,
-                        source_revision=source_revision, target_revision='document-import-v1', active_revision=source_revision,
+                        source_revision=source_revision, target_revision='document-import-v2', active_revision=source_revision,
                         file_reference_checker=references_verified)
                     if not all(result.report.checks.values()): raise ValueError('Catalog conversion failed')
                 target_engine.dispose()
@@ -230,11 +254,12 @@ def main():
     parser.add_argument('--source-files-root',type=Path,required=True)
     parser.add_argument('--bindings',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--original-bindings',type=Path)
     parser.add_argument('--installation-id',default='document-migration')
     parser.add_argument('--source-revision',default='legacy-1')
     args=parser.parse_args()
     try:
-        result=prepare_document_migration(args.source_catalog,args.source_files_root,json.loads(_read(args.bindings)),args.output,installation_id=args.installation_id,source_revision=args.source_revision)
+        result=prepare_document_migration(args.source_catalog,args.source_files_root,json.loads(_read(args.bindings)),args.output,installation_id=args.installation_id,source_revision=args.source_revision,original_bindings=json.loads(_read(args.original_bindings)) if args.original_bindings else None)
     except Exception:
         print(json.dumps({'format':FORMAT,'status':'error','error_code':'document_migration_rejected','activation_allowed':False}));return 1
     print(json.dumps(result,sort_keys=True));return 0

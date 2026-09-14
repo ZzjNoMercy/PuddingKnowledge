@@ -191,6 +191,13 @@ def rebind_attachment_metadata(
         updated_current, changed = _replace_metadata(current_metadata, bindings, require_all=True)
         documents[legacy_id]['doc_metadata'] = updated_source
         assets[legacy_id]['metadata_json'] = updated_current
+        from ..catalog.document_representations import legacy_document_representation
+        from ..catalog.rehearsal_runner import _source_ref_digest
+        document = documents[legacy_id]
+        if document.get('source_type', '').startswith('pdf_') or updated_source.get('mode') == 'multimodal_pdf':
+            document['source_path'] = updated_source['original_path']
+            legacy_document_representation(document)
+            updated_current['source_reference_digest'] = _source_ref_digest(document['source_path'], document['storage_path'])
         result[native] = {'legacy_document_id': legacy_id, 'selectors': changed,
                           'activation_allowed': False}
     receipt = {'format': 'knowledge-document-attachment-rebind/v1',

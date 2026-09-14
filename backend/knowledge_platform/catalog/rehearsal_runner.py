@@ -143,7 +143,9 @@ def _canonical_space(row: Mapping[str, Any]) -> dict[str, Any]:
 def _canonical_asset(row: Mapping[str, Any], *, source_revision: str, space_id: str) -> dict[str, Any]:
     document_id = str(row["id"])
     asset_id = f"asset_{document_id}_{hashlib.sha256(source_revision.encode('utf-8')).hexdigest()[:12]}"
-    content_sha = str(row.get("content_sha256") or "")
+    from .document_representations import legacy_document_representation
+    representation = legacy_document_representation(row)
+    content_sha = representation["body_sha256"] if representation else str(row.get("content_sha256") or "")
     content_digest = (
         content_sha if content_sha.startswith("sha256:") else f"sha256:{content_sha}" if content_sha else _digest("")
     )
