@@ -277,18 +277,26 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
     }
 
 
+def _allowed_entries():
+    return {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", _LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
+
+
 class PersistentWorkspace:
     """An owned state directory with its lifecycle lock held."""
 
-    def __init__(self, state_dir: Path, lock_fd: int, payload: dict[str, Any]):
+    def __init__(self, state_dir: Path, lock_fd: int, payload: dict[str, Any], authority_fd: int | None = None):
         self.state_dir = state_dir
         self.lock_fd = lock_fd
+        self.authority_fd = authority_fd
         self.payload = payload
 
     def __enter__(self) -> dict[str, Any]:
         return self.payload
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        if self.authority_fd is not None:
+            os.close(self.authority_fd)
+            self.authority_fd = None
         os.close(self.lock_fd)
 
 
@@ -317,9 +325,12 @@ def open_persistent_workspace(
     if document_migration is not None and (catalog is not None or wiki_root is not None):
         raise WorkspaceError("document migration cannot accompany Catalog/Wiki inputs")
     root = _path(state_dir)
+    from .writer_authority import load_binding, acquire_writer
+    # Validate enrolled/partial authority before chmod or business initialization.
+    load_binding(root)
     if root == root.parent:
         raise WorkspaceError("state-dir must not be the filesystem root")
-    allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
+    allowed = _allowed_entries()
     if root.exists():
         if root.is_symlink() or not root.is_dir():
             raise WorkspaceError("state-dir must be a real directory")
@@ -330,14 +341,16 @@ def open_persistent_workspace(
         root.mkdir(parents=True, mode=0o700)
     os.chmod(root, 0o700)
     lock_fd = _open_lock(root)
+    authority_fd = None
     try:
         _check_not_frozen(root)
+        authority_fd = acquire_writer(root)
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
         persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
-        allowed = {_LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
+        allowed = _allowed_entries()
         unexpected = [entry for entry in root.iterdir() if entry.name not in allowed]
         if unexpected:
             raise WorkspaceError("state-dir contains unexpected or partial entries")
@@ -373,7 +386,8 @@ def open_persistent_workspace(
                 if catalog is None or wiki_root is None:
                     raise WorkspaceError("first state-dir start requires catalog and wiki-root")
                 payload = _initialise(root, catalog, wiki_root)
-        return PersistentWorkspace(root, lock_fd, payload)
-    except Exception:
+        return PersistentWorkspace(root, lock_fd, payload, authority_fd)
+    except BaseException:
+        if authority_fd is not None:os.close(authority_fd)
         os.close(lock_fd)
         raise

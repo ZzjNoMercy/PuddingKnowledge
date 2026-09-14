@@ -117,8 +117,10 @@ class WikiAuthoringQueue:
 
 
 class WikiQueueWorker:
-    def __init__(self,queue,principal,*,workspace_lock_fd=None):
+    def __init__(self,queue,principal,*,workspace_lock_fd=None,authority_lock_fd=None):
         self.queue,self.principal=queue,principal
+        self._source_authority_fd=authority_lock_fd
+        self._authority_fd=None
         self._source_lock_fd=workspace_lock_fd
         self._workspace_fd=None
         self.stop_event=threading.Event();self.error=None
@@ -134,13 +136,23 @@ class WikiQueueWorker:
         finally:
             # A bounded close may return before the model settles. Retain the
             # same flock open-file description until the last worker write ends.
+            if self._authority_fd is not None:
+                os.close(self._authority_fd);self._authority_fd=None
             if self._workspace_fd is not None:
                 os.close(self._workspace_fd);self._workspace_fd=None
     def start(self):
         if self.thread.ident is not None:raise RuntimeError('Queue worker already started')
-        if self._source_lock_fd is not None:self._workspace_fd=os.dup(self._source_lock_fd)
-        try:self.thread.start()
+        try:
+            database=getattr(getattr(self.queue,'store',None),'database',None)
+            if database is not None:
+                from .writer_authority import retain_worker_admission
+                self._workspace_fd,self._authority_fd=retain_worker_admission(database,self._source_lock_fd,self._source_authority_fd)
+            else:
+                if self._source_authority_fd is not None:raise ValueError('Authority Worker requires an owned Catalog')
+                if self._source_lock_fd is not None:self._workspace_fd=os.dup(self._source_lock_fd)
+            self.thread.start()
         except BaseException:
+            if self._authority_fd is not None:os.close(self._authority_fd);self._authority_fd=None
             if self._workspace_fd is not None:os.close(self._workspace_fd);self._workspace_fd=None
             raise
     def close(self):

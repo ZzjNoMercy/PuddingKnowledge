@@ -318,7 +318,7 @@ def main() -> int:
         queue_worker = None
         if args.wiki_authoring_worker:
             from knowledge_platform.local.wiki_authoring_queue import WikiQueueWorker
-            queue_worker = WikiQueueWorker(wiki_services["wiki_authoring"].queue_service, principal, workspace_lock_fd=persistent.lock_fd)
+            queue_worker = WikiQueueWorker(wiki_services["wiki_authoring"].queue_service, principal, workspace_lock_fd=persistent.lock_fd, authority_lock_fd=persistent.authority_fd)
         try:
             if queue_worker is not None:queue_worker.start()
             LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])

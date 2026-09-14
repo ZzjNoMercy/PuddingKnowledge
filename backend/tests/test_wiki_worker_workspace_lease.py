@@ -38,18 +38,18 @@ def test_bounded_shutdown_keeps_workspace_locked_until_final_settlement(tmp_path
 
 def test_thread_start_failure_releases_duplicate_not_original(tmp_path,monkeypatch):
     owned,store,admin,who,request,model=prepare(tmp_path)
-    with open_persistent_workspace(tmp_path/'state') as payload:
-        # Acquire a distinct fixture lease for explicit descriptor ownership.
-        separate=tmp_path/'other';separate.mkdir()
-        fd=_open_lock(separate)
-        worker=WikiQueueWorker(admin.queue_service,who,workspace_lock_fd=fd)
-        def failed():raise RuntimeError('thread creation failed')
-        monkeypatch.setattr(worker.thread,'start',failed)
+    workspace=open_persistent_workspace(tmp_path/'state')
+    fd=workspace.lock_fd
+    worker=WikiQueueWorker(admin.queue_service,who,workspace_lock_fd=fd)
+    def failed():raise RuntimeError('thread creation failed')
+    monkeypatch.setattr(worker.thread,'start',failed)
+    try:
         with pytest.raises(RuntimeError):worker.start()
         assert worker._workspace_fd is None
-        with pytest.raises(WorkspaceError):_open_lock(separate)
-        os.close(fd)
-        reopened=_open_lock(separate);os.close(reopened)
+        with pytest.raises(WorkspaceError):_open_lock(tmp_path/'state')
+    finally:workspace.__exit__(None,None,None)
+    reopened=_open_lock(tmp_path/'state');os.close(reopened)
+
 
 
 @pytest.mark.parametrize('kind',['hardlink','public'])
