@@ -1,4 +1,4 @@
-# Document reverse materialization v4
+# Document reverse materialization v5
 
 An independent Knowledge installation now exposes:
 
@@ -64,16 +64,16 @@ are removed for rebuild. Markdown SHA-256 is recomputed from the verified primar
 body. The receipt commits old/current derived-field digests and invalidation
 reasons, retaining original values only in the immutable input snapshots. This
 does not rebuild any index or grant activation. Other user metadata and secrets
-remain intact. Prior v1/v2/v3 outputs remain immutable and require their matching
-tool; v4 refuses to adopt incompatible plans.
+remain intact. Prior v1/v2/v3/v4 outputs remain immutable and require their matching
+tool; v5 refuses to adopt incompatible plans.
 
 This is `verified_inactive_documents`. The candidate's absolute storage paths
 make its primary documents readable in this exact directory; moving it requires
 an audited path-rebinding step. It is not a complete relocated Claw Home. Relative images/linked files and explicitly bound known filesystem attachment
-metadata are materialized. Virtual attachment routes are not rebound. Vector/search
+metadata are materialized. Known virtual routes are bound to the candidate bodies directory. Vector/search
 indices and chunk metadata require rebuild before installation activation. Wiki, other Catalog domains, credential continuity, unified installation
 revision and audited thaw remain open. Graph closure proves the supported relative references only; external URLs,
-unknown metadata paths, virtual routes and binary embedded references are not covered. `indexes_rebuilt`,
+unknown metadata paths and binary embedded references are not covered. `indexes_rebuilt`,
 `installation_path_rebound`, activation and rollback completion stay false.
 
 The cooperative offline/POSIX contract, existing SQLite schema restrictions and
@@ -106,10 +106,10 @@ actual bytes; historical source claims remain historical and need not match a
 legitimately updated current attachment. Initial facts must match dependency graph
 inspection, and the source directory inventory is rechecked before completion.
 
-The v4 plan commits these bindings and the receipt reports selector counts and
+The v5 plan commits these bindings and the receipt reports selector counts and
 identities without raw paths. `known_attachment_filesystem_paths_rebound=true`
 only covers the selectors above. `metadata_attachment_paths_rebound=false` remains
-explicit because virtual routes and other metadata fields are installation-owned.
+explicit because arbitrary metadata fields and final installation placement are not covered.
 
 Legacy converted PDFs use an explicit two-representation contract: their
 `content_sha256` can identify the original PDF while `storage_path`, MIME and size
@@ -118,4 +118,23 @@ legacy content hash retains original PDF identity. Both files require verified
 bindings. Reverse materialization restores source_path and metadata.original_path
 to the verified original file, while storage_path, size and markdown_sha256 bind
 the verified Markdown. Existing updates and newly created native PDFs follow this
-contract. Virtual routes and full installation rollback readiness remain open.
+contract. Final installation placement and full rollback readiness remain open.
+
+## Candidate virtual routes (v5)
+
+The candidate bodies directory is its explicit knowledge root, recorded in the
+private plan. Each document virtual_path and canonical legacy_virtual_path are
+recomputed from its verified body path. Existing nonempty assets[*].virtual_path,
+multimodal.text_artifact and multimodal.image_assets_virtual_prefix are derived
+from their verified physical file/directory bindings. Current route-only assets
+without verified physical paths reject. Historical removed fields remain in
+source snapshots and are removed through the normal inverse metadata delta.
+
+Only verified paths inside this root can produce /knowledge/... routes. The
+receipt lists identities, selectors and counts without raw paths or values.
+Actual legacy resolver code is captured as a provenance-bound test fixture to
+check that body/image/directory routes resolve to the generated files. This is
+known_virtual_routes_rebound=true for the candidate root, not activation of a
+legacy HTTP server or relocation into a final installation. Moving the candidate
+still requires audited physical and virtual rebinding. Unknown metadata routes,
+absolute embedded document links and dynamic binary behavior remain unsupported.

@@ -45,7 +45,7 @@ def test_known_file_and_directory_metadata_paths_are_bound_to_candidate(tmp_path
     directory=Path(metadata['multimodal']['image_assets_dir'])
     assert directory==asset_path.parent and (directory/'empty').is_dir()
     assert metadata['nested']['token']=='private-value'
-    assert metadata['assets'][0]['virtual_path']=='/knowledge/assets/old/pic#x.png'
+    assert metadata['assets'][0]['virtual_path']=='/knowledge/images/pic#x.png'
     assert receipt['known_attachment_filesystem_paths_rebound'] is True
     assert receipt['metadata_attachment_paths_rebound'] is False  # virtual routing is still installation-owned
     assert '/legacy/' not in json.dumps(receipt)

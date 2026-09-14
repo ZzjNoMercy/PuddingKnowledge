@@ -17,7 +17,7 @@ from .core_catalog_reverse import build_core_catalog_reverse, _rows, _projection
 from ..local import writer_authority as control
 from ..local.workspace_freeze import _sync_directory
 
-FORMAT = 'puddingknowledge-document-reverse/v4'
+FORMAT = 'puddingknowledge-document-reverse/v5'
 EXTENSIONS = {'text/markdown': '.md', 'text/plain': '.txt', 'application/pdf': '.pdf',
               'text/csv': '.csv', 'application/json': '.json', 'text/html': '.html'}
 
@@ -150,7 +150,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 'inputs': [{'path': str(path), 'sha256': digest} for path, digest in zip(paths, input_digests)],
                 'body_root': str(root), 'bodies': facts, 'dependency_graph': graph,
                 'output_inventory': inventory, 'attachment_bindings': attachment_facts,
-                'output_identity': stage_identity}
+                'output_identity': stage_identity, 'candidate_knowledge_root': str(stage/'bodies')}
         base = {'format': FORMAT, 'plan': plan, 'state': 'copying', 'activation_allowed': False,
                 'rollback_completed': False, 'credential_continuity_verified': False,
                 'indexes_rebuilt': False, 'installation_path_rebound': False}
@@ -159,7 +159,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         marker = stage/'manifest.json'; previous = None
         if marker.exists() or marker.is_symlink():
             previous = _json_file(marker)
-            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256','derived_metadata_invalidation','attachment_rebinding'} if previous.get('state') == 'verified_inactive_documents' else set())
+            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256','derived_metadata_invalidation','attachment_rebinding','document_routes'} if previous.get('state') == 'verified_inactive_documents' else set())
             if set(previous) != expected_keys or previous['state'] not in ('copying','verified_inactive_documents') or any(not sql._json(previous[key]) == sql._json(value) for key,value in base.items() if key != 'state'):
                 raise ValueError('Reverse plan changed')
         elif any(p.name != '.writer-authority.lock' for p in stage.iterdir()):
@@ -210,6 +210,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             identities = {}
             invalidation = {}
             rebinding = {}
+            routes = {}
             def transform(legacy,before,after):
                 body_bindings = {asset: {'storage_path':str(stage/fact['output_relative']),
                                         'sha256':fact['sha256'],'size_bytes':fact['size_bytes']} for asset,fact in facts.items()}
@@ -226,6 +227,11 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 rebinding.update(rebound)
                 from .document_derived_metadata import invalidate_derived_metadata
                 prepared, normalized, invalidated = invalidate_derived_metadata(prepared, normalized, mapping, body_bindings)
+                from .document_routes import rebind_document_routes
+                prepared, normalized, route_receipt = rebind_document_routes(
+                    prepared, normalized, mapping, knowledge_root=str(stage/'bodies'),
+                    verified_files=set(expected), verified_directories=expected_directories)
+                routes.update(route_receipt)
                 identities.update(mapping); invalidation.update(invalidated)
                 return prepared, _projection(prepared, source_revision), normalized
             with tempfile.TemporaryDirectory(prefix='.reverse-work-',dir=stage) as temporary:
@@ -240,7 +246,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 if _after_copy:_after_copy('catalog.sqlite3')
             result={**base,'state':'verified_inactive_documents','core_receipt':receipt,
                     'identity_map':identities,'catalog_sha256':fact['sha256'],
-                    'derived_metadata_invalidation':invalidation, 'attachment_rebinding':rebinding}
+                    'derived_metadata_invalidation':invalidation, 'attachment_rebinding':rebinding, 'document_routes':routes}
         else:
             result=previous
         for path,digest in zip(paths,input_digests):
@@ -267,6 +273,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 'relative_dependencies_materialized':True,'dependency_file_count':len(graph['files']),
                 'derived_metadata_invalidation':result['derived_metadata_invalidation'],
                 'attachment_rebinding':result['attachment_rebinding'],
+                'document_routes':result['document_routes'], 'known_virtual_routes_rebound':True,
                 'known_attachment_filesystem_paths_rebound':True,
                 'external_references_validated':False,'metadata_attachment_paths_rebound':False,'activation_allowed':False,
                 'rollback_completed':False,'credential_continuity_verified':False,
