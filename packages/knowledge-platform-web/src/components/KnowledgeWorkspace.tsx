@@ -36,13 +36,16 @@ import {
   decodeAssetContent,
   errorMessage,
   evidenceOf,
+  isInlineImageMimeType,
   numberOf,
+  parseAssetResources,
   platformClient,
   records,
   relativeTime,
   shortDigest,
   stringOf,
   type PortableRecord,
+  type AssetResource,
 } from "@/lib/platform";
 
 export type WorkspaceSection = "overview" | "library" | "search" | "sources" | "schema" | "imports" | "analytics";
@@ -132,6 +135,10 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
   const [assetBody, setAssetBody] = useState("");
   const [assetEvidence, setAssetEvidence] = useState<ReturnType<typeof evidenceOf>>([]);
   const [assetLoading, setAssetLoading] = useState(false);
+  const [assetResources, setAssetResources] = useState<AssetResource[]>([]);
+  const [assetResourcesLoading, setAssetResourcesLoading] = useState(false);
+  const [assetResourcesError, setAssetResourcesError] = useState("");
+  const assetGeneration = useRef(0);
 
   const refreshGeneration = useRef(0);
   const refresh = useCallback(async () => {
@@ -165,28 +172,47 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
   useEffect(() => { void refresh(); return () => { ++refreshGeneration.current; }; }, [refresh]);
 
   async function openAsset(asset: PortableRecord) {
+    const generation = ++assetGeneration.current;
+    const assetId = field(asset, "id");
     setSelectedAsset(asset);
     setAssetBody("");
     setAssetEvidence([]);
-    if (assetKind(asset) !== "wiki_page") {
-      setAssetBody("该历史 Asset 已完成 Catalog 元数据迁移，但正文宿主 binding 尚未迁入独立 Platform。当前可以检索和查看元数据，暂不能读取正文。");
-      setAssetLoading(false);
-      return;
-    }
+    setAssetResources([]);
+    setAssetResourcesError("");
     setAssetLoading(true);
+    setAssetResourcesLoading(true);
+    const resourcesPromise = fetch(`/v1/assets/${encodeURIComponent(assetId)}/resources`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`资源列表请求失败（${response.status}）`);
+        return response.json() as Promise<unknown>;
+      })
+      .then((payload) => parseAssetResources(assetId, payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as PortableRecord).data : payload))
+      .then((resources) => ({ ok: true as const, resources }), (reason) => ({ ok: false as const, reason }));
+    const bodyPromise = platformClient.readAsset(assetId, {
+      resource_uri: field(asset, "source_uri") || undefined,
+      start: 0,
+      end: 8 * 1024 * 1024,
+    });
     try {
-      const result = await platformClient.readAsset(field(asset, "id"), {
-        resource_uri: field(asset, "source_uri") || undefined,
-        start: 0,
-        end: 8 * 1024 * 1024,
-      });
-      const data = dataOf(result);
-      setAssetBody(decodeAssetContent(data));
-      setAssetEvidence(evidenceOf(result));
+      const result = await bodyPromise;
+      if (generation === assetGeneration.current) {
+        const data = dataOf(result);
+        setAssetBody(decodeAssetContent(data));
+        setAssetEvidence(evidenceOf(result));
+      }
     } catch (reason) {
-      setAssetBody(`无法读取正文：${errorMessage(reason)}`);
+      if (generation === assetGeneration.current) setAssetBody(`无法读取正文：${errorMessage(reason)}`);
     } finally {
-      setAssetLoading(false);
+      if (generation === assetGeneration.current) setAssetLoading(false);
+    }
+    try {
+      const outcome = await resourcesPromise;
+      if (generation === assetGeneration.current) {
+        if (outcome.ok) setAssetResources(outcome.resources);
+        else setAssetResourcesError(errorMessage(outcome.reason));
+      }
+    } finally {
+      if (generation === assetGeneration.current) setAssetResourcesLoading(false);
     }
   }
 
@@ -253,7 +279,7 @@ export default function KnowledgeWorkspace({ section }: { section: WorkspaceSect
         </div>
       </main>
 
-      {selectedAsset ? <AssetDrawer asset={selectedAsset} body={assetBody} evidence={assetEvidence} loading={assetLoading} onClose={() => setSelectedAsset(null)} /> : null}
+      {selectedAsset ? <AssetDrawer asset={selectedAsset} body={assetBody} evidence={assetEvidence} loading={assetLoading} resources={assetResources} resourcesLoading={assetResourcesLoading} resourcesError={assetResourcesError} onClose={() => { ++assetGeneration.current; setSelectedAsset(null); }} /> : null}
     </div>
   );
 }
@@ -333,7 +359,7 @@ function AssetRows({ assets, onOpenAsset, compact = false }: { assets: PortableR
         return (
           <button key={field(asset, "id")} className={`asset-row ${compact ? "compact" : ""}`} onClick={() => onOpenAsset(asset)}>
             <span className="asset-main"><i><Icon size={17} /></i><span><strong>{assetTitle(asset)}</strong><small>{kind} · {shortDigest(asset.revision || asset.content_digest)}</small></span></span>
-            {!compact ? <><span>{field(asset, "source_type") || "Platform"}</span><span>{relativeTime(asset.updated_at || asset.created_at)}</span><span><StatusPill tone={kind === "wiki_page" ? "success" : "neutral"}>{kind === "wiki_page" ? "可阅读" : "仅元数据"}</StatusPill></span></> : <ChevronRight size={16} />}
+            {!compact ? <><span>{field(asset, "source_type") || "Platform"}</span><span>{relativeTime(asset.updated_at || asset.created_at)}</span><span><StatusPill tone={kind === "wiki_page" ? "success" : "neutral"}>{kind === "wiki_page" ? "可阅读" : "查看详情"}</StatusPill></span></> : <ChevronRight size={16} />}
           </button>
         );
       })}
@@ -484,13 +510,20 @@ function RecordDetail({ item }: { item: PortableRecord }) {
   return <pre className="record-detail">{JSON.stringify(item, null, 2)}</pre>;
 }
 
-function AssetDrawer({ asset, body, evidence, loading, onClose }: { asset: PortableRecord; body: string; evidence: ReturnType<typeof evidenceOf>; loading: boolean; onClose: () => void }) {
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AssetDrawer({ asset, body, evidence, loading, resources, resourcesLoading, resourcesError, onClose }: { asset: PortableRecord; body: string; evidence: ReturnType<typeof evidenceOf>; loading: boolean; resources: AssetResource[]; resourcesLoading: boolean; resourcesError: string; onClose: () => void }) {
   return (
     <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <aside className="asset-drawer" role="dialog" aria-modal="true" aria-label="Asset 详情">
         <header><button className="icon-button" onClick={onClose}><ChevronLeft size={17} /></button><div><span>{assetKind(asset)}</span><h2>{assetTitle(asset)}</h2></div><button className="icon-button" onClick={onClose}><X size={17} /></button></header>
         <div className="drawer-meta"><div><span>Asset ID</span><code>{field(asset, "id")}</code></div><div><span>Revision</span><code>{shortDigest(asset.revision || asset.content_digest)}</code></div><div><span>Source</span><code>{field(asset, "source_type") || "Platform"}</code></div></div>
         <section className="drawer-content"><h3>正文预览</h3>{loading ? <LoadingBlock label="正在读取正文…" /> : <pre>{body || "该 Asset 没有可预览的文本内容。"}</pre>}</section>
+        <section className="drawer-resources"><h3>附件与图片</h3>{resourcesLoading ? <p>正在读取资源列表…</p> : resourcesError ? <p className="resource-error">资源暂不可用：{resourcesError}</p> : resources.length ? resources.map((resource) => isInlineImageMimeType(resource.mime_type) ? <figure key={resource.id}><img src={resource.url} alt={resource.name} /><figcaption>{resource.name} · {formatBytes(resource.size_bytes)}</figcaption></figure> : <div className="resource-link" key={resource.id}><a href={resource.url} download={resource.name}>{resource.name}</a><span>{resource.mime_type} · {formatBytes(resource.size_bytes)}</span></div>) : <p>该 Asset 没有附件资源。</p>}</section>
         <section className="drawer-evidence"><h3>Portable Evidence</h3>{evidence.length ? evidence.map((item) => <div key={`${item.asset_id}-${item.resource_uri}`}><code>{item.resource_uri}</code><span>{item.matched_by?.join(" · ") || "resource_uri"}</span></div>) : <p>正文读取后会显示 knowledge:// Evidence。</p>}</section>
       </aside>
     </div>

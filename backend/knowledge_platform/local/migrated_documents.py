@@ -217,7 +217,8 @@ def load_migrated_workspace(root, manifest):
         from ..distribution.document_tree import validate_owned_tree
         paths = validate_owned_tree(root,manifest['document_tree'],manifest['tree_bindings'],bindings)
     return {'catalog': root/'catalog.sqlite3', 'file_bindings': paths, 'document_bindings': dict(paths),
-        'space_ids': sorted({r['space_id'] for r in manifest['facts']['assets'].values()}), 'pages': 0}
+        'space_ids': sorted({r['space_id'] for r in manifest['facts']['assets'].values()}), 'pages': 0,
+        'document_resources': {'root':str(root/'resources'),'tree':manifest['document_tree'],'bindings':manifest['tree_bindings'],'facts':manifest['facts']} if manifest['version']==4 else None}
 
 
 def bootstrap_migrated_documents(candidate, state_dir):

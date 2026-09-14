@@ -89,3 +89,29 @@ test("product navigation exposes the migrated Knowledge surfaces", async () => {
   assert.match(workspace, /platformClient\.readAsset/);
   assert.match(workspace, /platformClient\.search/);
 });
+
+test("asset resource parsing derives only exact same-origin 64-hex URLs", async () => {
+  const platform = await import(path.join(root, "src/lib/asset-resources.ts"));
+  const assetId = "document-42";
+  const digest = "a".repeat(64);
+  const resources = platform.parseAssetResources(assetId, {
+    resources: [
+      { id: digest, name: "photo.png", mime_type: "image/png", size_bytes: 12, url: `/v1/assets/${assetId}/resources/${digest}` },
+      { id: "b".repeat(63), name: "bad.bin", mime_type: "application/octet-stream", size_bytes: 2, url: `/v1/assets/${assetId}/resources/${"b".repeat(63)}` },
+      { id: "c".repeat(64), name: "external.bin", mime_type: "application/octet-stream", size_bytes: 2, url: "https://evil.example/resource" },
+    ]
+  }, "http://localhost");
+  assert.deepEqual(resources, [{ id: digest, name: "photo.png", mime_type: "image/png", size_bytes: 12, url: `http://localhost/v1/assets/${assetId}/resources/${digest}` }]);
+  assert.equal(platform.safeAssetResourceUrl(assetId, digest, `http://localhost/v1/assets/${assetId}/resources/${digest}?redirect=https://evil.example`, "http://localhost"), null);
+  assert.equal(platform.isInlineImageMimeType("image/webp"), true);
+  assert.equal(platform.isInlineImageMimeType("image/svg+xml"), false);
+});
+
+test("resource proxy preserves only binary-safe response headers", async () => {
+  const proxy = await readFile(path.join(root, "src/lib/platform-proxy.ts"), "utf8");
+  for (const header of ["cache-control", "content-disposition", "content-security-policy", "referrer-policy", "x-content-type-options"]) {
+    assert.match(proxy, new RegExp(`\\"${header}\\"`));
+  }
+  assert.doesNotMatch(proxy, /headers:\s*response\.headers/);
+  assert.doesNotMatch(proxy, /authorization|cookie/i);
+});

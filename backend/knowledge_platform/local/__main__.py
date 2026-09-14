@@ -289,6 +289,7 @@ def main() -> int:
             package_config=package_config,
             index_config=index_config,
             document_bindings=materialized.get("document_bindings"),
+            document_resources=materialized.get("document_resources"),
             asset_binding_review_queue=(LocalAssetBindingReviewQueue(args.asset_binding_review_queue)
                                         if args.asset_binding_review_queue else None),
         )

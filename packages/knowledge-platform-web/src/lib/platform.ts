@@ -4,8 +4,11 @@ import {
   type PlatformClient,
   type QueryResult,
 } from "@puddingai/knowledge-platform-console-contracts";
+export { isInlineImageMimeType, parseAssetResources, safeAssetResourceUrl } from "./asset-resources";
+export type { AssetResource } from "./asset-resources";
 
 export type PortableRecord = Record<string, unknown>;
+
 
 export const platformClient: PlatformClient = createPlatformClient({ baseUrl: "" });
 
@@ -28,6 +31,7 @@ export function records(value: unknown): PortableRecord[] {
 export function stringOf(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
+
 
 export function numberOf(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;

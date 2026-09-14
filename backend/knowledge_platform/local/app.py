@@ -62,6 +62,7 @@ def _build_app(
     package_config: dict | None = None,
     index_config: dict | None = None,
     document_bindings: dict[str, Path] | None = None,
+    document_resources: dict | None = None,
 ):
     catalog = CatalogQueryService(repository)
     structured_paths = dict(getattr(getattr(table_query, '_provider', None), 'paths', {}))
@@ -188,6 +189,10 @@ def _build_app(
         principal_provider=lambda: principal,
         correlation_provider=current_correlation,
     )
+    if document_resources is not None:
+        from .document_resources import DocumentResourceService
+        from ..transport.fastapi_document_resources_router import create_document_resources_router
+        app.include_router(create_document_resources_router(DocumentResourceService(repository,document_resources),principal_provider=lambda:principal))
     if wiki_authoring is not None:
         from knowledge_platform.transport.fastapi_wiki_authoring_router import create_wiki_authoring_router
         app.include_router(create_wiki_authoring_router(wiki_authoring, principal_provider=lambda: principal))

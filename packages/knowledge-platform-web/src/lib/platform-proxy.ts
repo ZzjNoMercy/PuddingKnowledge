@@ -16,6 +16,14 @@ const AUTHORING_ACTION_PATHS = new Set([
   "/v1/wiki/authoring/run_queue",
   "/v1/wiki/authoring/control_queue",
 ]);
+const RESPONSE_HEADER_ALLOWLIST = [
+  "cache-control",
+  "content-disposition",
+  "content-security-policy",
+  "content-type",
+  "referrer-policy",
+  "x-content-type-options",
+] as const;
 
 export class RequestBodyTooLargeError extends Error {
   constructor() {
@@ -117,10 +125,13 @@ export async function proxyPlatformRequest(request: NextRequest, pathname: strin
       body,
       cache: "no-store",
     });
-    return new Response(response.body, {
-      status: response.status,
-      headers: { "content-type": response.headers.get("content-type") || "application/json" },
-    });
+    const headers = new Headers();
+    for (const name of RESPONSE_HEADER_ALLOWLIST) {
+      const value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+    return new Response(response.body, { status: response.status, headers });
   } catch {
     return Response.json(
       { error: { code: "platform_unreachable", message: "Knowledge Platform API is unavailable" } },
