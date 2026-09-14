@@ -169,7 +169,7 @@ def _inverse(legacy, before, after, revision):
     return result
 
 
-def build_core_catalog_reverse(source_snapshot, target_before, target_after, output, *, source_revision):
+def build_core_catalog_reverse(source_snapshot, target_before, target_after, output, *, source_revision, _document_transform=None):
     if not isinstance(source_revision, str) or not source_revision or len(source_revision) > 200:
         raise ValueError('Invalid source revision')
     sources = [sql._path(path) for path in (source_snapshot, target_before, target_after)]
@@ -195,7 +195,12 @@ def build_core_catalog_reverse(source_snapshot, target_before, target_after, out
                     raise ValueError('Unmapped target domain changed')
             legacy = _rows(copies[0], LEGACY)
             before, after = [_rows(path, CORE) for path in copies[1:]]
-            reversed_rows = _inverse(legacy, before, after, source_revision)
+            inverse_legacy, inverse_before, inverse_after = legacy, before, after
+            if _document_transform is not None:
+                # Internal integration hook: the document materializer verifies
+                # actual file bytes and original baseline before rebinding paths.
+                inverse_legacy, inverse_before, inverse_after = _document_transform(legacy, before, after)
+            reversed_rows = _inverse(inverse_legacy, inverse_before, inverse_after, source_revision)
             fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             os.close(fd)
             db = sqlite3.connect(stage)
@@ -260,7 +265,7 @@ def build_core_catalog_reverse(source_snapshot, target_before, target_after, out
             for name in LEGACY:
                 if not _same(_by_id(actual_rows[name]), _by_id(reversed_rows[name])):
                     raise ValueError('Legacy rows changed during materialization')
-            _verify_projection(actual_rows, after, source_revision)
+            _verify_projection(actual_rows, inverse_after, source_revision)
             for path, digest in zip(sources, digests):
                 sql._path(path)
                 if sql._file_digest(path) != digest:
