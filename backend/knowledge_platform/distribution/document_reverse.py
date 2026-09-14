@@ -17,7 +17,7 @@ from .core_catalog_reverse import build_core_catalog_reverse, _rows, _projection
 from ..local import writer_authority as control
 from ..local.workspace_freeze import _sync_directory
 
-FORMAT = 'puddingknowledge-document-reverse/v2'
+FORMAT = 'puddingknowledge-document-reverse/v3'
 EXTENSIONS = {'text/markdown': '.md', 'text/plain': '.txt', 'application/pdf': '.pdf',
               'text/csv': '.csv', 'application/json': '.json', 'text/html': '.html'}
 
@@ -44,7 +44,7 @@ def _copy(source, destination, fact):
 
 
 def prepare_document_reverse(source_snapshot, target_before, target_after, body_root, bindings,
-                             output, *, source_revision, _after_copy=None):
+                             output, *, source_revision, attachment_bindings=None, _after_copy=None):
     paths = [sql._path(value) for value in (source_snapshot, target_before, target_after)]
     root, stage = [files._path(value) for value in (body_root, output)]
     files._check(root.stat(), directory=True)
@@ -90,7 +90,36 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         if relative in primary and primary[relative] != mime_type:
             raise ValueError('Conflicting document MIME bindings')
         primary[relative] = mime_type
+    from .document_attachment_metadata import collect_attachment_references
+    references = collect_attachment_references(list(documents.values()))
+    attachment_bindings = {} if attachment_bindings is None else attachment_bindings
+    if not isinstance(attachment_bindings, dict) or set(attachment_bindings) != set(references):
+        raise ValueError('Every known attachment reference requires an exact snapshot binding')
+    attachment_facts = {}
+    attachment_directories = set()
+    for reference, kind in sorted(references.items()):
+        relative = attachment_bindings[reference]
+        files._relative(relative)
+        if Path(relative).as_posix() != relative:
+            raise ValueError('Attachment path must be canonical and relative')
+        source = root/relative
+        if kind == 'file':
+            _, fact = files._read(source)
+            attachment_facts[reference] = {'kind': kind, 'input_relative': relative, **fact}
+            primary.setdefault(relative, None)
+        else:
+            inventory_facts = files._inventory(source)
+            attachment_facts[reference] = {'kind': kind, 'input_relative': relative, 'inventory': inventory_facts}
+            attachment_directories.add(relative)
+            attachment_directories.update(str(Path(relative)/name) for name in inventory_facts['directories'])
+            for name in inventory_facts['files']:
+                primary.setdefault(str(Path(relative)/name), None)
     graph = collect_document_dependencies(root, primary)
+    for value in attachment_facts.values():
+        relative = value['input_relative']
+        claimed_files = {relative: {key:value[key] for key in ('sha256','size_bytes')}} if value['kind'] == 'file' else {str(Path(relative)/name): fact for name, fact in value['inventory']['files'].items()}
+        if any(graph['files'].get(name) != fact for name, fact in claimed_files.items()):
+            raise ValueError('Attachment changed during dependency discovery')
     expected = dict(graph['files'])
     sources = {name: root/name for name in expected}
     for fact in facts.values():
@@ -102,8 +131,8 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             raise ValueError('Primary body alias collides with dependency')
         expected[name] = actual
         sources[name] = root/fact['input_relative']
-    expected_directories = set()
-    for name in expected:
+    expected_directories = set(attachment_directories)
+    for name in [*expected, *attachment_directories]:
         parent = Path(name).parent
         while parent != Path('.'):
             expected_directories.add(parent.as_posix()); parent = parent.parent
@@ -120,7 +149,8 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         plan = {'format': FORMAT, 'source_revision': source_revision,
                 'inputs': [{'path': str(path), 'sha256': digest} for path, digest in zip(paths, input_digests)],
                 'body_root': str(root), 'bodies': facts, 'dependency_graph': graph,
-                'output_inventory': inventory, 'output_identity': stage_identity}
+                'output_inventory': inventory, 'attachment_bindings': attachment_facts,
+                'output_identity': stage_identity}
         base = {'format': FORMAT, 'plan': plan, 'state': 'copying', 'activation_allowed': False,
                 'rollback_completed': False, 'credential_continuity_verified': False,
                 'indexes_rebuilt': False, 'installation_path_rebound': False}
@@ -129,7 +159,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         marker = stage/'manifest.json'; previous = None
         if marker.exists() or marker.is_symlink():
             previous = _json_file(marker)
-            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256','derived_metadata_invalidation'} if previous.get('state') == 'verified_inactive_documents' else set())
+            expected_keys = set(base) | ({'core_receipt','identity_map','catalog_sha256','derived_metadata_invalidation','attachment_rebinding'} if previous.get('state') == 'verified_inactive_documents' else set())
             if set(previous) != expected_keys or previous['state'] not in ('copying','verified_inactive_documents') or any(not sql._json(previous[key]) == sql._json(value) for key,value in base.items() if key != 'state'):
                 raise ValueError('Reverse plan changed')
         elif any(p.name != '.writer-authority.lock' for p in stage.iterdir()):
@@ -179,10 +209,21 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             from .document_reverse_plan import plan_document_reverse
             identities = {}
             invalidation = {}
+            rebinding = {}
             def transform(legacy,before,after):
                 body_bindings = {asset: {'storage_path':str(stage/fact['output_relative']),
                                         'sha256':fact['sha256'],'size_bytes':fact['size_bytes']} for asset,fact in facts.items()}
                 prepared, baseline, normalized, mapping = plan_document_reverse(legacy,before,after,source_revision,body_bindings)
+                from .document_attachment_metadata import rebind_attachment_metadata
+                verified_refs = {}
+                for reference, value in attachment_facts.items():
+                    verified_refs[reference] = {'kind': value['kind'], 'output_path': str(stage/'bodies'/value['input_relative'])}
+                    if value['kind'] == 'file':
+                        verified_refs[reference].update({key:value[key] for key in ('sha256','size_bytes')})
+                    else:
+                        verified_refs[reference]['inventory_digest'] = control.digest(value['inventory'])
+                prepared, normalized, rebound = rebind_attachment_metadata(prepared, normalized, mapping, verified_refs, native_assets=after["knowledge_assets"])
+                rebinding.update(rebound)
                 from .document_derived_metadata import invalidate_derived_metadata
                 prepared, normalized, invalidated = invalidate_derived_metadata(prepared, normalized, mapping, body_bindings)
                 identities.update(mapping); invalidation.update(invalidated)
@@ -199,7 +240,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 if _after_copy:_after_copy('catalog.sqlite3')
             result={**base,'state':'verified_inactive_documents','core_receipt':receipt,
                     'identity_map':identities,'catalog_sha256':fact['sha256'],
-                    'derived_metadata_invalidation':invalidation}
+                    'derived_metadata_invalidation':invalidation, 'attachment_rebinding':rebinding}
         else:
             result=previous
         for path,digest in zip(paths,input_digests):
@@ -209,6 +250,9 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         for relative, fact in graph['files'].items():
             if files._read(root/relative)[1] != fact:
                 raise ValueError('Reverse dependency input changed')
+        for value in attachment_facts.values():
+            if value['kind'] == 'directory' and files._inventory(root/value['input_relative']) != value['inventory']:
+                raise ValueError('Attachment directory changed before commit')
         if files._inventory(body_dir,private=True) != inventory or files._read(stage/'catalog.sqlite3',private=True)[1]['sha256'] != result['catalog_sha256']:
             raise ValueError('Reverse output changed before commit')
         current=(stage/'.writer-authority.lock').lstat()
@@ -222,6 +266,8 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
                 'idempotent':complete,'document_bodies_materialized':True,
                 'relative_dependencies_materialized':True,'dependency_file_count':len(graph['files']),
                 'derived_metadata_invalidation':result['derived_metadata_invalidation'],
+                'attachment_rebinding':result['attachment_rebinding'],
+                'known_attachment_filesystem_paths_rebound':True,
                 'external_references_validated':False,'metadata_attachment_paths_rebound':False,'activation_allowed':False,
                 'rollback_completed':False,'credential_continuity_verified':False,
                 'indexes_rebuilt':False,'installation_path_rebound':False}
@@ -231,9 +277,12 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('source-snapshot','target-before','target-after','body-root','bindings','output','source-revision'):
         parser.add_argument('--'+name,required=True)
+    parser.add_argument("--attachment-bindings")
     args=vars(parser.parse_args(argv))
     try:
         args['bindings']=_json_file(Path(args['bindings']))
+        if args['attachment_bindings'] is not None:
+            args['attachment_bindings']=_json_file(Path(args['attachment_bindings']))
         result=prepare_document_reverse(**args)
     except Exception:
         print(json.dumps({'format':FORMAT,'status':'error','error_code':'document_reverse_rejected','activation_allowed':False}));return 1

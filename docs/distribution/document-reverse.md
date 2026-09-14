@@ -1,4 +1,4 @@
-# Document reverse materialization v2
+# Document reverse materialization v3
 
 An independent Knowledge installation now exposes:
 
@@ -48,7 +48,7 @@ repair. Unknown output entries and unsafe links reject. Private interrupted
 `.reverse-work-*` directories are retained diagnostically and are not committed
 candidate data. Source and output are rechecked before final manifest publication.
 
-The v2 plan additionally commits the dependency graph and complete output tree.
+The dependency plan additionally commits the dependency graph and complete output tree.
 Markdown images, links and supported static HTML reference attributes are parsed;
 UTF-8 percent paths are decoded after splitting query/fragment so encoded filename
 characters remain part of the file. Local parent traversal is allowed only within
@@ -64,16 +64,16 @@ are removed for rebuild. Markdown SHA-256 is recomputed from the verified primar
 body. The receipt commits old/current derived-field digests and invalidation
 reasons, retaining original values only in the immutable input snapshots. This
 does not rebuild any index or grant activation. Other user metadata and secrets
-remain intact. v1 output layouts remain immutable and must be processed with the
-matching v1 tool; v2 refuses to adopt their incompatible plan.
+remain intact. Prior v1/v2 outputs remain immutable and require their matching
+tool; v3 refuses to adopt incompatible plans.
 
 This is `verified_inactive_documents`. The candidate's absolute storage paths
 make its primary documents readable in this exact directory; moving it requires
-an audited path-rebinding step. It is not a complete relocated Claw Home. Relative images/linked files are materialized, but existing
-absolute attachment paths inside Catalog metadata are not rebound. Vector/search
+an audited path-rebinding step. It is not a complete relocated Claw Home. Relative images/linked files and explicitly bound known filesystem attachment
+metadata are materialized. Virtual attachment routes are not rebound. Vector/search
 indices and chunk metadata require rebuild before installation activation. Wiki, other Catalog domains, credential continuity, unified installation
 revision and audited thaw remain open. Graph closure proves the supported relative references only; external URLs,
-metadata attachment paths and binary embedded references are not covered. `indexes_rebuilt`,
+unknown metadata paths, virtual routes and binary embedded references are not covered. `indexes_rebuilt`,
 `installation_path_rebound`, activation and rollback completion stay false.
 
 The cooperative offline/POSIX contract, existing SQLite schema restrictions and
@@ -81,3 +81,38 @@ The cooperative offline/POSIX contract, existing SQLite schema restrictions and
 primary document bindings; it does not infer paths from URI strings or discover
 credentials. Receipt contains IDs/counts/digests, not document bodies or secret
 values. Exact-output retry requires unchanged input snapshots and output path.
+
+## Explicit attachment bindings
+
+Pass `--attachment-bindings /absolute/private/attachment-bindings.json` when
+current document metadata contains any of these nonempty filesystem selectors:
+`assets[*].path`, `original_path`, or `multimodal.image_assets_dir`. The private
+JSON maps each exact old absolute reference to one canonical relative path below
+`--body-root`, for example:
+
+```json
+{
+  "/legacy/attachments/picture.png": "images/picture.png",
+  "/legacy/original.pdf": "original/source.pdf",
+  "/legacy/attachments": "images"
+}
+```
+
+All known current references require bindings; missing, extra, escaping or linked
+paths reject. Files bind SHA-256 and size; directory bindings commit their entire
+bounded inventory, including empty directories. File mappings must agree with
+their image-directory mapping. Declared current attachment hashes/sizes must match
+actual bytes; historical source claims remain historical and need not match a
+legitimately updated current attachment. Initial facts must match dependency graph
+inspection, and the source directory inventory is rechecked before completion.
+
+The v3 plan commits these bindings and the receipt reports selector counts and
+identities without raw paths. `known_attachment_filesystem_paths_rebound=true`
+only covers the selectors above. `metadata_attachment_paths_rebound=false` remains
+explicit because virtual routes and other metadata fields are installation-owned.
+
+Legacy converted PDFs require a separate representation contract: their
+`content_sha256` can identify the original PDF while `storage_path`, MIME and size
+identify parsed Markdown. This version does not resolve that mismatch or rebind
+legacy `source_path`. Its synthetic original-file fixture proves attachment bytes
+and selected paths, not actual PDF-document migration or rollback readiness.
