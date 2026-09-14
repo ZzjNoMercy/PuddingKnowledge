@@ -84,6 +84,10 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
     required = {'format','installation_id','source_revision','source_schema_revision','source_catalog','source_files_root','bindings'}
     wiki_requested = request.get('format') == REQUEST_FORMAT_V2
     if wiki_requested: required.add('source_wiki_root')
+    for optional in ('original_bindings','attachment_bindings'):
+        if optional in request:
+            if not isinstance(request[optional],dict):raise ValueError('Migration bindings must be objects')
+            required.add(optional)
     if set(request) != required or request['format'] not in (REQUEST_FORMAT, REQUEST_FORMAT_V2):
         raise ValueError('Unsupported migration request')
     for key in ('installation_id','source_revision','source_schema_revision'):
@@ -160,12 +164,12 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             if normalization.stat().st_mode & 0o077: raise ValueError('Catalog normalization output is not private')
             normalized_catalog, normalization_report = normalize_catalog(catalog, normalization)
             prepare_document_migration(normalized_catalog, files_root, request['bindings'], candidate,
-                installation_id=request['installation_id'], source_revision=request['source_revision'])
+                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'))
         else:
             if normalization.exists(): raise ValueError('Source Catalog sidecar bundle changed')
             normalization_report = None
             prepare_document_migration(catalog, files_root, request['bindings'], candidate,
-                installation_id=request['installation_id'], source_revision=request['source_revision'])
+                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'))
         if wiki_root is not None:
             prepare_wiki_archive(wiki_root, output/'wiki', installation_id=request['installation_id'], source_revision=request['source_revision'])
         if _after_candidate: _after_candidate()
@@ -195,6 +199,8 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             for name, fact in wiki_manifest['files'].items():
                 artifacts['wiki/archive/'+name] = 'sha256:'+fact['sha256']
         _verify_artifacts(output, artifacts)
+        from .document_tree import validate_owned_tree
+        validate_owned_tree(candidate,manifest['plan']['document_tree'],manifest['plan']['tree_bindings'],manifest['asset_bindings'])
         receipt = {'format':FORMAT,'request_digest':plan['request_digest'],'source_snapshot_identity':plan['source_snapshot_identity'],
             'state':'verified_inactive_partial','artifacts':artifacts,
             'covered_domains':['document_catalog','document_blobs', *(['wiki_archive'] if wiki_requested else [])],

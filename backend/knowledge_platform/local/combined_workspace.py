@@ -111,8 +111,9 @@ def _source_commitments(document, wiki):
         manifest = documents_verifier._json(raw)
         bindings = documents_verifier._bindings(manifest.get("asset_bindings"))
         originals = documents_verifier._original_bindings(manifest.get("plan", {}).get("original_bindings", {}), bindings)
+        tree_files=manifest.get("plan", {}).get("document_tree", {}).get("files", {})
         files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != {"catalog.sqlite3", *bindings.values(), *originals.values()}:
+        if not isinstance(files, dict) or set(files) != {"catalog.sqlite3", *bindings.values(), *originals.values(), *("resources/"+name for name in tree_files)}:
             raise CombinedWorkspaceError("document candidate inventory is invalid")
         total = 0
         for relative, expected in files.items():
@@ -150,6 +151,7 @@ def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: P
         _merge_catalog(doc_stage / "catalog.sqlite3", wiki_stage / "catalog.sqlite3", staging / "catalog.sqlite3")
         os.chmod(staging / "catalog.sqlite3", 0o600)
         os.replace(doc_stage / "blobs", staging / "blobs")
+        if (doc_stage/"resources").exists():os.replace(doc_stage/"resources",staging/"resources")
         os.replace(wiki_stage / "wiki-evidence", staging / "wiki-evidence")
         doc_manifest = json.loads((doc_stage / "workspace.json").read_bytes())
         wiki_manifest = json.loads((wiki_stage / "workspace.json").read_bytes())
@@ -157,7 +159,7 @@ def bootstrap_combined_workspace(document_candidate: Path | str, wiki_archive: P
                     "catalog": "catalog.sqlite3", "blob_root": "blobs", "evidence_root": "wiki-evidence",
                     "document_manifest": doc_manifest, "wiki_manifest": wiki_manifest, "activation_allowed": False}
         _write(staging / "workspace.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
-        for name in ("catalog.sqlite3", "blobs", "wiki-evidence", "workspace.json"):
+        for name in ["catalog.sqlite3", "blobs", "wiki-evidence", "workspace.json", *(["resources"] if (staging/"resources").exists() else [])]:
             os.replace(staging / name, root / name)
         if schema_evidence is not None:
             os.replace(wiki_stage / "wiki-schema.json", root / "wiki-schema.json")
@@ -192,7 +194,7 @@ def load_combined_workspace(root: Path | str, manifest: dict, *, _initializing_o
     dm, wm = manifest["document_manifest"], manifest["wiki_manifest"]
     if not isinstance(dm, dict) or not isinstance(wm, dict):
         raise CombinedWorkspaceError("nested workspace manifests are invalid")
-    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2, 3)), (wm, (3, 5, 6, 7)))):
+    if any(value.get("catalog") != "catalog.sqlite3" or value.get("owner") != "puddingknowledge-local" or type(value.get("version")) is not int or value["version"] not in versions for value, versions in ((dm, (2, 3, 4)), (wm, (3, 5, 6, 7)))):
         raise CombinedWorkspaceError("nested Catalog binding is invalid")
     try:
         documents = load_migrated_workspace(root, dm)

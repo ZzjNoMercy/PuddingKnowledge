@@ -177,7 +177,7 @@ def _load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initiali
         raise MigratedWikiWorkspaceError("migrated Wiki workspace manifest is invalid")
     allowed = {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", ".workspace.lock", "workspace.json", ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal", "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal", "processing", "wiki-evidence"}
     if manifest["version"] == 7: allowed.add("wiki-schema.json")
-    if _combined: allowed.add("blobs")
+    if _combined: allowed.update(("blobs", "resources"))
     if any(entry.name not in allowed for entry in root.iterdir()):
         raise MigratedWikiWorkspaceError("state-dir contains unexpected entries")
     if (root / ".initializing").exists() or (root / ".initializing").is_symlink():

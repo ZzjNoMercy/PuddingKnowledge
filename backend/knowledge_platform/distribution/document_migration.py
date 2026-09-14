@@ -15,7 +15,7 @@ from knowledge_platform.catalog.rehearsal_runner import run_core_catalog_rehears
 from knowledge_platform.distribution.sqlite_reverse_delta import _path as _database_path, _file_digest
 from knowledge_platform.distribution.catalog_snapshot import _path, _identity
 
-FORMAT = 'puddingknowledge-document-migration/v2'
+FORMAT = 'puddingknowledge-document-migration/v3'
 TOKEN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$')
 MAX_FILE = 32 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
@@ -74,6 +74,7 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         names = {'catalog.sqlite3', *bodies}
+        directories = {'blobs','resources', *('resources/'+name for name in plan['document_tree']['directories'])}
         allowed = {'manifest.json', 'checkpoint.json', '.migration.lock', *names}
         allowed |= {name + '.migration-part' for name in allowed if name != '.migration.lock'}
         # A kill after no-replace link and before unlink leaves exactly this
@@ -92,13 +93,14 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
             if path.stat().st_mode & 0o077: raise ValueError('Migration output permissions are not private')
             relative = path.relative_to(output).as_posix()
             if path.is_dir():
-                if relative != 'blobs': raise ValueError('Unowned migration directory')
+                if relative not in directories: raise ValueError('Unowned migration directory')
             else:
                 _identity(path)
                 if relative not in allowed: raise ValueError('Unowned migration output')
         checkpoint = {'format': FORMAT, 'state': 'copying', 'plan': plan,
                       'asset_bindings': assets, 'blob_digests': {name: _digest(body) for name, body in bodies.items()},
                       'activation_allowed': False, 'complete_installation_migration': False}
+        if len(_encode(checkpoint)) > 1024*1024:raise ValueError('Document checkpoint exceeds manifest budget')
         marker = output / 'checkpoint.json'
         final = output / 'manifest.json'
         complete = final.exists()
@@ -118,6 +120,11 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
                 raise ValueError('Migration checkpoint mismatch')
             if not isinstance(manifest['files'],dict) or set(manifest['files']) != names:
                 raise ValueError('Migration files mismatch')
+        for name in sorted(directories, key=lambda value:(value.count('/'),value)):
+            directory = output/name
+            if not directory.exists():
+                if complete: raise ValueError('Completed migration directory is missing')
+                directory.mkdir(mode=0o700); _sync_directory(directory.parent)
         for name in ['catalog.sqlite3', *sorted(bodies)]:
             path = output / name
             if not path.exists():
@@ -133,6 +140,8 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
                 if actual != _digest(bodies[name]): raise ValueError('Migration output integrity mismatch')
             if complete and actual != manifest['files'][name]: raise ValueError('Migration output integrity mismatch')
         verify_source()
+        from .document_tree import validate_owned_tree
+        validate_owned_tree(output, plan['document_tree'], plan['tree_bindings'], assets)
         validate_catalog(output/'catalog.sqlite3')
         for name, body in bodies.items():
             if _digest(_read(output/name)) != _digest(body): raise ValueError('Migration output changed during publication')
@@ -140,6 +149,7 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
             manifest = {'format': FORMAT, 'state': 'verified_inactive', 'plan': plan, 'asset_bindings': assets,
                         'files': {name: 'sha256:' + _file_digest(output/name) if name == 'catalog.sqlite3' else _digest(_read(output/name)) for name in names},
                         'activation_allowed': False, 'complete_installation_migration': False}
+            if len(_encode(manifest)) > 1024*1024:raise ValueError('Document manifest exceeds budget')
             _atomic(final, _encode(manifest))
         _sync_directory(output)
         return complete
@@ -147,7 +157,7 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
 
 
 def prepare_document_migration(source_catalog, source_files_root, bindings, output, *,
-                               installation_id='document-migration', source_revision='legacy-1', original_bindings=None, _after_publish=None):
+                               installation_id='document-migration', source_revision='legacy-1', original_bindings=None, attachment_bindings=None, _after_publish=None):
     source = _database_path(source_catalog)
     source_identity = _identity(source)
     root, output = _path(source_files_root), _path(output)
@@ -180,10 +190,11 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                 if len(ids) != len(set(ids)) or set(ids) != set(bindings):
                     raise ValueError('Every document requires exactly one binding')
                 from ..catalog.document_representations import legacy_document_representation
-                representations = {}
+                representations = {}; decoded_rows = []
                 for raw in rows:
                     row = dict(raw)
                     if isinstance(row.get('doc_metadata'), str): row['doc_metadata'] = json.loads(row['doc_metadata'])
+                    decoded_rows.append(row)
                     representation = legacy_document_representation(row)
                     if representation: representations[str(row['id'])] = representation
                 if set(original_bindings) != set(representations):
@@ -201,7 +212,7 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                     bodies[relative] = body
                     asset_id = f"asset_{doc_id}_{hashlib.sha256(source_revision.encode()).hexdigest()[:12]}"
                     assets[asset_id] = relative
-                    facts[doc_id] = {'relative_path': bindings[doc_id], 'digest': digest}
+                    facts[doc_id] = {'relative_path': bindings[doc_id], 'digest': digest, 'asset_id':asset_id}
                     if representation:
                         if type(row.get('size_bytes')) is not int or row['size_bytes'] != len(body): raise ValueError('PDF Markdown size mismatch')
                         if bindings[doc_id] == original_bindings[doc_id]: raise ValueError('PDF representations must have distinct bindings')
@@ -212,9 +223,17 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                         original_relative = 'blobs/'+representation['original_sha256']
                         bodies[original_relative] = original; original_assets[asset_id] = original_relative
                         facts[doc_id]['original'] = {'relative_path':original_bindings[doc_id], 'digest':original_digest}
+                from .document_tree import collect_tree, verify_tree_source
+                tree = collect_tree(root, decoded_rows, bindings, original_bindings, attachment_bindings)
+                for name, fact in tree['files'].items():
+                    data = _read(root/name)
+                    if _digest(data) != 'sha256:'+fact['sha256'] or len(data) != fact['size_bytes']: raise ValueError('Dependency changed during migration')
+                    bodies['resources/'+name] = data
+                if sum(map(len,bodies.values())) > MAX_TOTAL: raise ValueError('Document package exceeds byte budget')
+                tree_bindings = {fact['asset_id']:fact['relative_path'] for fact in facts.values()}
                 plan = {'format': FORMAT, 'source_catalog_digest': source_digest,
                         'source_revision': source_revision, 'installation_id': installation_id,
-                        'document_bindings_digest': _digest(_encode(facts)), 'original_bindings': original_assets}
+                        'document_bindings_digest': _digest(_encode(facts)), 'original_bindings': original_assets, 'document_tree':tree, 'tree_bindings':tree_bindings}
                 verified_references = {}
                 for row in rows:
                     for field in ('source_path', 'storage_path'):
@@ -231,6 +250,7 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                             if not all(verified.report.checks.values()): raise ValueError('Existing Catalog does not match source')
                     finally: engine.dispose()
                 def verify_source():
+                    verify_tree_source(root, tree)
                     if _identity(_database_path(source)) != source_identity or 'sha256:' + _file_digest(source) != source_digest: raise ValueError('Source changed during migration')
                     for body_fact in facts.values():
                         for fact in [body_fact, *([body_fact['original']] if 'original' in body_fact else [])]:
@@ -255,11 +275,12 @@ def main():
     parser.add_argument('--bindings',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--original-bindings',type=Path)
+    parser.add_argument('--attachment-bindings',type=Path)
     parser.add_argument('--installation-id',default='document-migration')
     parser.add_argument('--source-revision',default='legacy-1')
     args=parser.parse_args()
     try:
-        result=prepare_document_migration(args.source_catalog,args.source_files_root,json.loads(_read(args.bindings)),args.output,installation_id=args.installation_id,source_revision=args.source_revision,original_bindings=json.loads(_read(args.original_bindings)) if args.original_bindings else None)
+        result=prepare_document_migration(args.source_catalog,args.source_files_root,json.loads(_read(args.bindings)),args.output,installation_id=args.installation_id,source_revision=args.source_revision,original_bindings=json.loads(_read(args.original_bindings)) if args.original_bindings else None,attachment_bindings=json.loads(_read(args.attachment_bindings)) if args.attachment_bindings else None)
     except Exception:
         print(json.dumps({'format':FORMAT,'status':'error','error_code':'document_migration_rejected','activation_allowed':False}));return 1
     print(json.dumps(result,sort_keys=True));return 0

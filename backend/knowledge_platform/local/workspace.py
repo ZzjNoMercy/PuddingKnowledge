@@ -209,6 +209,9 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
     manifest = _read_json(state_dir / _MANIFEST, label="state-dir manifest")
     if manifest.get("owner") != "puddingknowledge-local" or type(manifest.get("version")) is not int:
         raise WorkspaceError("state-dir manifest is invalid")
+    if (state_dir/"resources").exists() or (state_dir/"resources").is_symlink():
+        if manifest.get("kind") not in ("migrated_documents", "migrated_knowledge"):
+            raise WorkspaceError("state-dir resources are not registered")
     if manifest.get("version") == 4 and manifest.get("kind") == "migrated_knowledge":
         from .combined_workspace import load_combined_workspace
         try:
@@ -221,7 +224,7 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
             return load_migrated_wiki_workspace(state_dir, manifest)
         except (ValueError, OSError, RuntimeError) as error:
             raise WorkspaceError(str(error)) from error
-    if manifest.get("version") in (2, 3) and manifest.get("kind") == "migrated_documents":
+    if manifest.get("version") in (2, 3, 4) and manifest.get("kind") == "migrated_documents":
         for name in _SQLITE_AUXILIARY:
             auxiliary = state_dir / name
             if auxiliary.exists() or auxiliary.is_symlink():
@@ -278,7 +281,7 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
 
 
 def _allowed_entries():
-    return {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", _LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
+    return {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", _LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "resources", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
 
 
 class PersistentWorkspace:
@@ -347,7 +350,7 @@ def open_persistent_workspace(
         authority_fd = acquire_writer(root)
         manifest = root / _MANIFEST
         marker = root / _INITIALIZING
-        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "wiki-evidence", "wiki-schema.json", "retrieval-traces.sqlite3")]
+        persistent_entries = [root / name for name in ("catalog.sqlite3", "wiki", "blobs", "resources", "wiki-evidence", "wiki-schema.json", "retrieval-traces.sqlite3")]
         if marker.exists() or marker.is_symlink():
             raise WorkspaceError("state-dir contains an incomplete initialization")
         allowed = _allowed_entries()

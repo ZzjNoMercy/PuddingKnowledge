@@ -84,3 +84,12 @@ This does not acquire source-writer authority or migrate other Catalog domains.
 It consumes an immutable approved snapshot, and all existing partial/inactive
 flags remain in force. The normalized legacy Catalog is intermediate evidence,
 not the target Knowledge Catalog and never a Harness database.
+
+Document requests may additionally supply `original_bindings` and
+`attachment_bindings` objects. They are passed only to the document converter;
+Wiki archiving retains its separate input contract. Document migration v3
+commits a source-relative `resources` tree, and the outer receipt includes those
+file hashes. The full tree, including empty directories, is verified before
+receipt publication. Source-reference mapping and package/workspace versions are
+described in `forward-document-dependencies.md`; this remains an inactive partial
+migration receipt with no installation writer assignment.

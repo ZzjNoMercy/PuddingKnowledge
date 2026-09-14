@@ -18,7 +18,7 @@ def fixture(root):
     return catalog,files,root/'output'
 
 
-@pytest.mark.parametrize('point',['catalog.sqlite3','blob'])
+@pytest.mark.parametrize('point',['catalog.sqlite3','blob','resources/doc.md'])
 def test_real_sigkill_publication_resumes(tmp_path,point):
     catalog,files,out=fixture(tmp_path);marker=tmp_path/'paused'
     env=dict(os.environ)
@@ -85,7 +85,7 @@ def test_incomplete_part_is_replaced_after_checkpoint_verification(tmp_path):
     def stop(name):raise RuntimeError('stop after catalog')
     with pytest.raises(RuntimeError):prepare_document_migration(catalog,files,{'doc-1':'doc.md'},out,_after_publish=stop)
     plan=json.loads((out/'checkpoint.json').read_text());name=next(iter(plan['blob_digests']))
-    part=out/(name+'.migration-part');part.parent.mkdir(mode=0o700);part.write_bytes(b'truncated');part.chmod(0o600)
+    part=out/(name+'.migration-part');part.parent.mkdir(mode=0o700,exist_ok=True);part.write_bytes(b'truncated');part.chmod(0o600)
     assert prepare_document_migration(catalog,files,{'doc-1':'doc.md'},out)['idempotent'] is False
     assert not part.exists()
 

@@ -24,7 +24,7 @@ class MigratedDocumentWorkspaceError(RuntimeError):
 
 
 _PROVIDER = 'knowledge_migrated_documents'
-_FORMAT = 'puddingknowledge-document-migration/v2'
+_FORMAT = 'puddingknowledge-document-migration/v3'
 _ID = re.compile(r'[A-Za-z0-9._:-]{1,160}')
 _BLOB = re.compile(r'blobs/[0-9a-f]{64}')
 _MAX_CATALOG = 64 * 1024 * 1024
@@ -186,9 +186,11 @@ def _verify_original_catalog(path, originals):
 
 def load_migrated_workspace(root, manifest):
     required = {'version','owner','kind','catalog','blob_root','provider_id','file_bindings','facts','pages','activation_allowed'}
-    if manifest.get('version') == 3: required.add('original_bindings')
-    if set(manifest) != required or manifest['version'] not in (2,3) or manifest['kind'] != 'migrated_documents' or manifest['catalog'] != 'catalog.sqlite3' or manifest['blob_root'] != 'blobs' or manifest['provider_id'] != _PROVIDER or manifest['activation_allowed'] is not False:
+    if manifest.get('version') in (3,4): required.add('original_bindings')
+    if manifest.get('version') == 4: required.update(('document_tree','tree_bindings'))
+    if set(manifest) != required or manifest['version'] not in (2,3,4) or manifest['kind'] != 'migrated_documents' or manifest['catalog'] != 'catalog.sqlite3' or manifest['blob_root'] != 'blobs' or manifest['provider_id'] != _PROVIDER or manifest['activation_allowed'] is not False:
         raise MigratedDocumentWorkspaceError('migrated workspace manifest is invalid')
+    if manifest['version'] != 4 and ((root/'resources').exists() or (root/'resources').is_symlink()):raise MigratedDocumentWorkspaceError('Unregistered document resources')
     bindings = _bindings(manifest['file_bindings'])
     originals = _original_bindings(manifest.get('original_bindings', {}), bindings)
     _read(root/'catalog.sqlite3', _MAX_CATALOG)
@@ -211,6 +213,9 @@ def load_migrated_workspace(root, manifest):
         if total > _MAX_TOTAL or _digest(data) != 'sha256:'+relative[6:]:
             raise MigratedDocumentWorkspaceError('owned blob digest mismatch')
     paths = {key: root/relative for key,relative in bindings.items()}
+    if manifest['version'] == 4:
+        from ..distribution.document_tree import validate_owned_tree
+        paths = validate_owned_tree(root,manifest['document_tree'],manifest['tree_bindings'],bindings)
     return {'catalog': root/'catalog.sqlite3', 'file_bindings': paths, 'document_bindings': dict(paths),
         'space_ids': sorted({r['space_id'] for r in manifest['facts']['assets'].values()}), 'pages': 0}
 
@@ -226,29 +231,39 @@ def bootstrap_migrated_documents(candidate, state_dir):
     with _candidate_lock(candidate):
         manifest = _json(_read(candidate/'manifest.json', 1024*1024))
         required = {'format','state','plan','asset_bindings','files','activation_allowed','complete_installation_migration'}
-        if set(manifest) != required or manifest['format'] not in (_FORMAT, 'puddingknowledge-document-migration/v1') or manifest['state'] != 'verified_inactive' or manifest['activation_allowed'] is not False or manifest['complete_installation_migration'] is not False:
+        if set(manifest) != required or manifest['format'] not in (_FORMAT, 'puddingknowledge-document-migration/v1', 'puddingknowledge-document-migration/v2') or manifest['state'] != 'verified_inactive' or manifest['activation_allowed'] is not False or manifest['complete_installation_migration'] is not False:
             raise MigratedDocumentWorkspaceError('candidate is not a completed inactive migration')
         bindings = _bindings(manifest['asset_bindings'])
         originals = _original_bindings(manifest['plan'].get('original_bindings', {}), bindings)
+        tree=manifest['plan'].get('document_tree'); tree_bindings=manifest['plan'].get('tree_bindings')
+        if manifest['format'] == _FORMAT and (tree is None or tree_bindings is None):raise MigratedDocumentWorkspaceError('Document tree missing')
+        tree_files={} if tree is None else tree['files']
         files = manifest['files']
-        if not isinstance(files, dict) or set(files) != {'catalog.sqlite3', *bindings.values(), *originals.values()}:
+        if not isinstance(files, dict) or set(files) != {'catalog.sqlite3', *bindings.values(), *originals.values(), *('resources/'+name for name in tree_files)}:
             raise MigratedDocumentWorkspaceError('candidate inventory is invalid')
         for p in candidate.iterdir():
-            if p.name not in {'catalog.sqlite3','blobs','manifest.json','checkpoint.json','.migration.lock'}:
+            if p.name not in {'catalog.sqlite3','blobs','resources','manifest.json','checkpoint.json','.migration.lock'}:
                 raise MigratedDocumentWorkspaceError('candidate contains unexpected data')
         if (candidate/'checkpoint.json').exists(): _read(candidate/'checkpoint.json', 1024*1024)
         blob_root = _real(candidate/'blobs')
         if not blob_root.is_dir() or blob_root.stat().st_mode & 0o077 or {p.name for p in blob_root.iterdir()} != {v[6:] for v in [*bindings.values(), *originals.values()]}:
             raise MigratedDocumentWorkspaceError('candidate blobs are invalid')
+        if tree is not None:
+            from ..distribution.document_tree import validate_owned_tree
+            validate_owned_tree(candidate,tree,tree_bindings,bindings)
+        elif (candidate/'resources').exists():raise MigratedDocumentWorkspaceError('Unregistered document resources')
         _write(root/'.initializing', b'document bootstrap\n'); _sync(root)
         staging = Path(tempfile.mkdtemp(prefix='.staging-', dir=root))
         try:
             (staging/'blobs').mkdir(mode=0o700)
+            if tree is not None:
+                (staging/'resources').mkdir(mode=0o700)
+                for name in sorted(tree['directories'],key=lambda value:(value.count('/'),value)):(staging/'resources'/name).mkdir(mode=0o700)
             total = 0
             for relative, expected in files.items():
                 data = _read(candidate/relative, _MAX_CATALOG if relative == 'catalog.sqlite3' else _MAX_BLOB)
                 total += len(data)
-                if total > _MAX_TOTAL or _digest(data) != expected or (relative != 'catalog.sqlite3' and expected != 'sha256:'+relative[6:]):
+                if total > _MAX_TOTAL or _digest(data) != expected or (relative.startswith('blobs/') and expected != 'sha256:'+relative[6:]):
                     raise MigratedDocumentWorkspaceError('candidate file digest mismatch')
                 _write(staging/relative, data)
             facts = _facts(staging/'catalog.sqlite3', bindings, exact=True)
@@ -262,8 +277,13 @@ def bootstrap_migrated_documents(candidate, state_dir):
             owned = {'version':2,'owner':'puddingknowledge-local','kind':'migrated_documents','catalog':'catalog.sqlite3',
                 'blob_root':'blobs','provider_id':_PROVIDER,'file_bindings':bindings,'facts':facts,'pages':0,'activation_allowed':False}
             if originals: owned.update(version=3, original_bindings=originals)
+            if tree is not None:
+                owned.update(version=4,original_bindings=originals,document_tree=tree,tree_bindings=tree_bindings)
+                validate_owned_tree(staging,tree,tree_bindings,bindings)
+                for name in sorted(tree['directories'],key=lambda value:-value.count('/')):_sync(staging/'resources'/name)
+                _sync(staging/'resources')
             _write(staging/'workspace.json', json.dumps(owned, sort_keys=True).encode())
-            for name in ('catalog.sqlite3','blobs','workspace.json'): os.rename(staging/name, root/name)
+            for name in ['catalog.sqlite3','blobs','workspace.json', *(['resources'] if tree is not None else [])]: os.rename(staging/name, root/name)
             _sync(root)
             (root/'.initializing').unlink(); _sync(root)
             return load_migrated_workspace(root, owned)

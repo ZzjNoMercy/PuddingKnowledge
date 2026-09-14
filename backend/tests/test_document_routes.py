@@ -1,9 +1,7 @@
 import copy
-import sys
 
 import pytest
 
-sys.path.insert(0, "/private/tmp/knowledge-document-routes-round1/backend")
 from knowledge_platform.distribution.document_routes import DocumentRouteError, rebind_document_routes
 
 

@@ -133,6 +133,9 @@ def test_v1_ordinary_candidate_remains_supported(tmp_path):
     _,_,_,candidate,body=_run(tmp_path)
     marker=candidate/'manifest.json';manifest=json.loads(marker.read_text())
     manifest['format']='puddingknowledge-document-migration/v1';manifest['plan'].pop('original_bindings')
+    manifest['plan'].pop('document_tree');manifest['plan'].pop('tree_bindings')
+    manifest['files']={k:v for k,v in manifest['files'].items() if not k.startswith('resources/')}
+    shutil.rmtree(candidate/'resources')
     marker.write_text(json.dumps(manifest))
     with open_persistent_workspace(tmp_path/'state',document_migration=candidate) as payload:
         assert next(iter(payload['document_bindings'].values())).read_bytes()==body
