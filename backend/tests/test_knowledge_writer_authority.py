@@ -1,7 +1,7 @@
-import json,os,threading
+import hashlib,json,os,re,subprocess,sys,threading
 from pathlib import Path
 import pytest
-from knowledge_platform.local.writer_authority import enroll,suspend,load_binding,journal,lock,BINDING
+from knowledge_platform.local.writer_authority import assign,thaw,enroll,suspend,load_binding,journal,lock,read,encoded,digest,main,BINDING
 from knowledge_platform.local.workspace import open_persistent_workspace,_open_lock,WorkspaceError
 from knowledge_platform.local.wiki_authoring_queue import WikiQueueWorker
 from test_knowledge_platform_local_workspace import _catalog
@@ -163,3 +163,294 @@ def test_hardlinked_catalog_rejects_enrollment_and_api_admission(roots):
  assert not (state/BINDING).exists()
  shared.unlink();enroll(state,authority,'enroll-1');os.link(state/'catalog.sqlite3',shared)
  with pytest.raises(ValueError,match='unlinked'):open_persistent_workspace(state)
+
+
+def _manifest(root,state,*,rollback_digest=None,suffix=''):
+ value={'format':'agent-knowledge-platform-installation-migration/v1',
+  'source':{'installation_id':'inst-1'+suffix,'schema_revision':'rev-1','catalog_revision':'rev-1'},
+  'targets':{'puddingknowledge':'puddingknowledge-local@0.1.0'},
+  'object_summaries':[{'domain':'knowledge_catalog','object_count':1,'source_digest':'sha256:'+'a'*64}],
+  'id_resource_mappings':[],'credential_rebinds':[],
+  'active_writers':{'session_harness':'puddingclaw','knowledge_catalog':'puddingclaw','connector_jobs':'puddingclaw'},
+  'checkpoint':{'stage':'prepared'},'rollback_strategy':'no_write_until_finalized','state':state,'rollback_window_open':True}
+ if rollback_digest is not None:value['rollback_evidence_digest']='sha256:'+rollback_digest
+ path=root/f'manifest-{state.lower()}{suffix}.json'
+ path.write_bytes((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode());path.chmod(0o600)
+ return path
+
+def _evidence(root,name='reverse-evidence.json'):
+ path=root/name;path.write_bytes(('{"reverse":"candidate","name":'+json.dumps(name)+'}\n').encode());path.chmod(0o600)
+ return path,hashlib.sha256(path.read_bytes()).hexdigest()
+
+def test_assign_and_thaw_restores_self_writes(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED')
+ result=assign(state,manifest,'op-1','puddingknowledge')
+ assert result==assign(state,manifest,'op-1','puddingknowledge')
+ head=result['events'][-1]
+ assert head['revision']==2 and head['state']=='assigned'
+ assert head['writers']=={'knowledge_catalog':'puddingknowledge','connector_jobs':'puddingknowledge'}
+ assert head['freeze_receipt_sha256']==result['events'][1]['freeze_receipt_sha256'] and head['rollback_evidence_sha256'] is None
+ with pytest.raises(WorkspaceError):open_persistent_workspace(state)
+ report=thaw(state,manifest,'op-1')
+ assert report==thaw(state,manifest,'op-1') and report['activation_allowed'] is True
+ assert not (state/'.workspace-freeze-v1.json').exists()
+ retired=authority/'freeze-marker-rev2.json';receipt=authority/'thaw-receipt-rev2.json'
+ assert hashlib.sha256(retired.read_bytes()).hexdigest()==head['freeze_receipt_sha256']
+ assert read(receipt)['revision_sha256']==head['sha256'] and report['journal']==journal(load_binding(state))
+ workspace=open_persistent_workspace(state)
+ try:assert workspace.authority_fd is not None
+ finally:workspace.__exit__(None,None,None)
+
+def test_assign_requires_suspended_authority(roots):
+ state,authority=roots;enroll(state,authority,'op-1')
+ manifest=_manifest(state.parent,'PREPARED')
+ with pytest.raises(ValueError,match='not suspended'):assign(state,manifest,'op-1','puddingknowledge')
+ with pytest.raises(ValueError,match='not assigned'):thaw(state,manifest,'op-1')
+ suspend(state,'op-1')
+ with pytest.raises(ValueError,match='not assigned'):thaw(state,manifest,'op-1')
+ assert len(journal(load_binding(state))['events'])==2
+
+def test_assign_and_thaw_bind_the_suspension_operation(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED')
+ with pytest.raises(ValueError,match='operation'):assign(state,manifest,'other','puddingknowledge')
+ assign(state,manifest,'op-1','puddingknowledge')
+ with pytest.raises(ValueError,match='operation'):thaw(state,manifest,'other')
+ with pytest.raises(ValueError,match='assignment changed'):assign(state,_manifest(state.parent,'PREPARED',suffix='-2'),'op-1','puddingknowledge')
+ assert thaw(state,manifest,'op-1')['activation_allowed'] is True
+
+@pytest.mark.parametrize('manifest_state',['DISCOVERED','CUTOVER','ROLLED_BACK','FINALIZED'])
+def test_forward_assign_requires_prepared_manifest(roots,manifest_state):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ with pytest.raises(ValueError,match='PREPARED'):assign(state,_manifest(state.parent,manifest_state),'op-1','puddingknowledge')
+ assert len(journal(load_binding(state))['events'])==2
+
+def test_rollback_assign_requires_rolled_back_manifest_and_matching_evidence(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ evidence,commitment=_evidence(state.parent)
+ with pytest.raises(ValueError,match='ROLLED_BACK'):assign(state,_manifest(state.parent,'PREPARED'),'op-1','puddingclaw',rollback_evidence=evidence)
+ rolled=_manifest(state.parent,'ROLLED_BACK',rollback_digest=commitment)
+ with pytest.raises(ValueError,match='requires rollback evidence'):assign(state,rolled,'op-1','puddingclaw')
+ other,_=_evidence(state.parent,'other-evidence.json')
+ with pytest.raises(ValueError,match='does not match'):assign(state,rolled,'op-1','puddingclaw',rollback_evidence=other)
+ with pytest.raises(ValueError,match='does not match'):assign(state,_manifest(state.parent,'ROLLED_BACK'),'op-1','puddingclaw',rollback_evidence=evidence)
+ with pytest.raises(ValueError,match='no rollback evidence'):assign(state,_manifest(state.parent,'PREPARED',suffix='-3'),'op-1','puddingknowledge',rollback_evidence=evidence)
+ assert len(journal(load_binding(state))['events'])==2
+
+def test_rollback_assignment_denies_self_runtime_and_worker(roots):
+ from types import SimpleNamespace
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ forward=_manifest(state.parent,'PREPARED')
+ assign(state,forward,'op-1','puddingknowledge');thaw(state,forward,'op-1')
+ with open_persistent_workspace(state):pass
+ suspend(state,'op-2')
+ queue=SimpleNamespace(store=SimpleNamespace(database=state/'catalog.sqlite3'))
+ workspace_fd=_open_lock(state)
+ try:
+  with lock(authority,exclusive=False) as authority_fd:
+   with pytest.raises(ValueError,match='suspended'):
+    WikiQueueWorker(queue,None,workspace_lock_fd=workspace_fd,authority_lock_fd=authority_fd).start()
+ finally:os.close(workspace_fd)
+ evidence,commitment=_evidence(state.parent)
+ rolled=_manifest(state.parent,'ROLLED_BACK',rollback_digest=commitment)
+ result=assign(state,rolled,'op-2','puddingclaw',rollback_evidence=evidence)
+ assert result==assign(state,rolled,'op-2','puddingclaw',rollback_evidence=evidence)
+ head=result['events'][-1]
+ assert head['revision']==4 and head['rollback_evidence_sha256']==commitment
+ assert head['writers']=={'knowledge_catalog':'puddingclaw','connector_jobs':'puddingclaw'}
+ with pytest.raises(WorkspaceError):open_persistent_workspace(state)
+ with pytest.raises(ValueError,match='not assigned'):thaw(state,rolled,'op-2')
+ workspace_fd=_open_lock(state)
+ try:
+  with lock(authority,exclusive=False) as authority_fd:
+   with pytest.raises(ValueError,match='assigned to another product'):
+    WikiQueueWorker(queue,None,workspace_lock_fd=workspace_fd,authority_lock_fd=authority_fd).start()
+ finally:os.close(workspace_fd)
+ (state/'.workspace-freeze-v1.json').unlink()
+ with pytest.raises(ValueError,match='assigned to another product'):open_persistent_workspace(state)
+ reopened=_open_lock(state);os.close(reopened)
+
+@pytest.mark.parametrize('mode',['repeat_suspend','skip_revision','broken_link','missing_binding','extra_field','mixed_writers','unknown_writer','rollback_without_evidence','forward_with_evidence','receipt_mismatch','bad_revision_pointer','bad_manifest_digest'])
+def test_assigned_chain_violations_rejected(roots,mode):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ binding=load_binding(state);current=journal(binding);head=current['events'][-1]
+ value={'revision':2,'previous':head['sha256'],'operation_id':'op-1','state':'assigned',
+  'writers':{'knowledge_catalog':'puddingknowledge','connector_jobs':'puddingknowledge'},
+  'freeze_receipt_sha256':head['freeze_receipt_sha256'],'active_installation_revision':'sha256:'+'b'*64,
+  'migration_manifest_sha256':'c'*64,'rollback_evidence_sha256':None}
+ if mode=='repeat_suspend':value={'revision':2,'previous':head['sha256'],'operation_id':'op-1','state':'suspended','writers':{'knowledge_catalog':None,'connector_jobs':None},'freeze_receipt_sha256':head['freeze_receipt_sha256']}
+ if mode=='skip_revision':value['revision']=3
+ if mode=='broken_link':value['previous']='f'*64
+ if mode=='missing_binding':del value['migration_manifest_sha256']
+ if mode=='extra_field':value['unexpected']='x'
+ if mode=='mixed_writers':value['writers']={'knowledge_catalog':'puddingknowledge','connector_jobs':'puddingclaw'}
+ if mode=='unknown_writer':value['writers']={'knowledge_catalog':'puddingharness','connector_jobs':'puddingharness'}
+ if mode=='rollback_without_evidence':value['writers']={'knowledge_catalog':'puddingclaw','connector_jobs':'puddingclaw'}
+ if mode=='forward_with_evidence':value['rollback_evidence_sha256']='d'*64
+ if mode=='receipt_mismatch':value['freeze_receipt_sha256']='e'*64
+ if mode=='bad_revision_pointer':value['active_installation_revision']='b'*64
+ if mode=='bad_manifest_digest':value['migration_manifest_sha256']='sha256:'+'c'*64
+ crafted=dict(value,sha256=digest(value))
+ (authority/'journal.json').write_bytes(encoded(dict(current,events=[*current['events'],crafted])))
+ with pytest.raises(ValueError):journal(binding)
+
+def test_thaw_interrupted_after_receipt_resumes_exactly(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge')
+ def stop():raise RuntimeError('injected interruption after receipt')
+ with pytest.raises(RuntimeError):thaw(state,manifest,'op-1',_after_receipt=stop)
+ assert (authority/'thaw-receipt-rev2.json').exists() and (state/'.workspace-freeze-v1.json').exists()
+ with pytest.raises(WorkspaceError):open_persistent_workspace(state)
+ report=thaw(state,manifest,'op-1')
+ assert report==thaw(state,manifest,'op-1') and report['activation_allowed'] is True
+ assert (authority/'freeze-marker-rev2.json').exists() and not (state/'.workspace-freeze-v1.json').exists()
+
+def test_thaw_receipt_write_failure_preserves_freeze(roots,monkeypatch):
+ import knowledge_platform.local.writer_authority as module
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge')
+ original=module._replace
+ def fail(*args):raise OSError('injected receipt failure')
+ monkeypatch.setattr(module,'_replace',fail)
+ with pytest.raises(OSError):thaw(state,manifest,'op-1')
+ assert (state/'.workspace-freeze-v1.json').exists() and not (authority/'thaw-receipt-rev2.json').exists()
+ monkeypatch.setattr(module,'_replace',original)
+ assert thaw(state,manifest,'op-1')['activation_allowed'] is True
+
+@pytest.mark.parametrize('sync_failure',[1,2,3])
+def test_thaw_directory_sync_failure_retry_is_exact(roots,monkeypatch,sync_failure):
+ import knowledge_platform.local.writer_authority as module
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge')
+ original=module._sync;calls=0
+ def sync(root):
+  nonlocal calls;calls+=1
+  if calls==sync_failure:raise OSError('injected directory fsync failure')
+  return original(root)
+ monkeypatch.setattr(module,'_sync',sync)
+ with pytest.raises(OSError):thaw(state,manifest,'op-1')
+ monkeypatch.setattr(module,'_sync',original)
+ report=thaw(state,manifest,'op-1')
+ assert report==thaw(state,manifest,'op-1') and report['activation_allowed'] is True
+
+def test_thaw_receipt_or_retired_marker_tamper_rejected(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge');thaw(state,manifest,'op-1')
+ receipt=authority/'thaw-receipt-rev2.json';committed=receipt.read_bytes()
+ receipt.write_bytes(b'{}\n')
+ with pytest.raises(ValueError,match='thaw receipt changed'):thaw(state,manifest,'op-1')
+ receipt.write_bytes(committed)
+ retired=authority/'freeze-marker-rev2.json';marker=retired.read_bytes()
+ retired.write_bytes(b'{}\n')
+ with pytest.raises(ValueError,match='Retired freeze marker changed'):thaw(state,manifest,'op-1')
+ retired.write_bytes(marker)
+ assert thaw(state,manifest,'op-1')['activation_allowed'] is True
+
+def test_thaw_conflicting_or_missing_evidence_rejected(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge');thaw(state,manifest,'op-1')
+ retired=authority/'freeze-marker-rev2.json';receipt=authority/'thaw-receipt-rev2.json'
+ restored=state/'.workspace-freeze-v1.json';restored.write_bytes(retired.read_bytes());restored.chmod(0o600)
+ with pytest.raises(ValueError,match='Conflicting'):thaw(state,manifest,'op-1')
+ restored.unlink();receipt.unlink()
+ with pytest.raises(ValueError,match='receipt missing'):thaw(state,manifest,'op-1')
+
+def test_thaw_rejects_changed_manifest(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge')
+ with pytest.raises(ValueError,match='thaw manifest changed'):thaw(state,_manifest(state.parent,'PREPARED',suffix='-2'),'op-1')
+
+@pytest.mark.parametrize('mode',['format','missing_key','extra_key','bad_writer','bad_digest','bad_state','duplicate_domain'])
+def test_assign_rejects_structurally_invalid_manifest(roots,mode):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED')
+ value=json.loads(manifest.read_text())
+ if mode=='format':value['format']='other/v2'
+ if mode=='missing_key':del value['checkpoint']
+ if mode=='extra_key':value['unexpected']=1
+ if mode=='bad_writer':value['active_writers']['knowledge_catalog']='nobody'
+ if mode=='bad_digest':value['object_summaries'][0]['source_digest']='sha256:zz'
+ if mode=='bad_state':value['state']='BOGUS'
+ if mode=='duplicate_domain':value['object_summaries'].append({'domain':'knowledge_catalog','object_count':0,'source_digest':'sha256:'+'b'*64})
+ manifest.write_bytes((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode())
+ with pytest.raises(ValueError,match='Installation manifest'):assign(state,manifest,'op-1','puddingknowledge')
+ assert len(journal(load_binding(state))['events'])==2
+
+def test_assign_binds_raw_manifest_bytes_not_canonical_form(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED')
+ raw=(json.dumps(json.loads(manifest.read_text()),indent=1)+'\n').encode()
+ manifest.write_bytes(raw)
+ result=assign(state,manifest,'op-1','puddingknowledge')
+ head=result['events'][-1]
+ assert head['migration_manifest_sha256']==hashlib.sha256(raw).hexdigest()
+ assert head['active_installation_revision']=='sha256:'+hashlib.sha256(raw).hexdigest()
+
+
+def _harness_receipt_contract_journal(binding):
+ # Field-for-field mirror of the committed cross-product validator in
+ # PuddingHarness/backend/harness/knowledge_writer_receipt.py (_journal and the
+ # validate_receipt wrapper); constants and field rules are copied, not imported.
+ value=journal(binding)
+ assert set(value)=={'format','binding_sha256','events'} and value['format']=='puddingknowledge-writer-authority/v1'
+ assert value['binding_sha256']==digest(binding)
+ base={'revision','previous','operation_id','state','writers','freeze_receipt_sha256','sha256'}
+ previous=None
+ for number,event in enumerate(value['events']):
+  expected=base|({'active_installation_revision','migration_manifest_sha256','rollback_evidence_sha256'} if number>0 and number%2==0 else set())
+  assert set(event)==expected and type(event['revision']) is int and event['revision']==number and event['previous']==previous
+  assert event['sha256']==digest({key:item for key,item in event.items() if key!='sha256'})
+  assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,159}',event['operation_id'])
+  if number==0:
+   assert event['state']=='existing_writer' and event['freeze_receipt_sha256'] is None and event['operation_id']==binding['enrollment_id']
+   assert event['writers']=={'knowledge_catalog':'puddingknowledge','connector_jobs':'puddingknowledge'}
+  elif number%2:
+   assert event['state']=='suspended' and event['writers']=={'knowledge_catalog':None,'connector_jobs':None}
+   assert re.fullmatch('[0-9a-f]{64}',event['freeze_receipt_sha256'])
+  else:
+   writers=event['writers']
+   assert event['state']=='assigned' and set(writers)=={'knowledge_catalog','connector_jobs'}
+   assert writers['knowledge_catalog']==writers['connector_jobs'] and writers['knowledge_catalog'] in ('puddingclaw','puddingknowledge')
+   assert re.fullmatch('[0-9a-f]{64}',event['freeze_receipt_sha256'])
+   assert event['freeze_receipt_sha256']==value['events'][number-1]['freeze_receipt_sha256']
+   assert re.fullmatch('sha256:[0-9a-f]{64}',event['active_installation_revision'])
+   assert re.fullmatch('[0-9a-f]{64}',event['migration_manifest_sha256'])
+   if writers['knowledge_catalog']=='puddingclaw':assert re.fullmatch('[0-9a-f]{64}',event['rollback_evidence_sha256'])
+   else:assert event['rollback_evidence_sha256'] is None
+  previous=event['sha256']
+ return value
+
+def test_assigned_journal_matches_harness_receipt_contract(roots,capsys):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ forward=_manifest(state.parent,'PREPARED');assign(state,forward,'op-1','puddingknowledge')
+ assert len(_harness_receipt_contract_journal(load_binding(state))['events'])==3
+ thaw(state,forward,'op-1');suspend(state,'op-2')
+ evidence,commitment=_evidence(state.parent)
+ assign(state,_manifest(state.parent,'ROLLED_BACK',rollback_digest=commitment),'op-2','puddingclaw',rollback_evidence=evidence)
+ produced=_harness_receipt_contract_journal(load_binding(state))
+ assert len(produced['events'])==5 and produced['events'][-1]['rollback_evidence_sha256']==commitment
+ assert main(['status','--state-dir',str(state)])==0
+ receipt=json.loads(capsys.readouterr().out)
+ assert set(receipt)=={'format','status','journal','installation_cutover_performed'}
+ assert receipt['format']=='puddingknowledge-writer-authority/v1' and receipt['status']=='ok'
+ assert receipt['installation_cutover_performed'] is False and receipt['journal']==journal(load_binding(state))
+
+def test_cli_assign_status_thaw_fail_closed_reporting(roots):
+ state,authority=roots;backend=Path(__file__).resolve().parents[1]
+ env=dict(os.environ,PYTHONPATH=str(backend))
+ def run(*args):return subprocess.run([sys.executable,'-m','knowledge_platform.local.writer_authority',*args],env=env,cwd=backend,capture_output=True,text=True)
+ assert run('enroll','--state-dir',str(state),'--authority',str(authority),'--operation-id','op-1').returncode==0
+ assert run('suspend','--state-dir',str(state),'--operation-id','op-1').returncode==0
+ manifest=_manifest(state.parent,'PREPARED')
+ bad=run('assign','--state-dir',str(state),'--operation-id','other','--manifest',str(manifest),'--writer','puddingknowledge')
+ assert bad.returncode==1 and json.loads(bad.stdout)['status']=='error' and json.loads(bad.stdout)['activation_allowed'] is False
+ assert run('assign','--state-dir',str(state),'--operation-id','op-1','--manifest',str(manifest),'--writer','puddingknowledge').returncode==0
+ status=run('status','--state-dir',str(state))
+ assert status.returncode==0
+ reported=json.loads(status.stdout);head=reported['journal']['events'][-1]
+ assert head['revision']==2 and head['state']=='assigned' and head['writers']['knowledge_catalog']=='puddingknowledge'
+ done=run('thaw','--state-dir',str(state),'--operation-id','op-1','--manifest',str(manifest))
+ assert done.returncode==0 and json.loads(done.stdout)['status']=='ok'
+ again=run('thaw','--state-dir',str(state),'--operation-id','other','--manifest',str(manifest))
+ assert again.returncode==1 and json.loads(again.stdout)['activation_allowed'] is False

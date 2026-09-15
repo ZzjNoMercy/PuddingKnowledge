@@ -1,7 +1,10 @@
-"""Knowledge-owned existing workspace writer enrollment and suspension.
+"""Knowledge-owned workspace writer enrollment, suspension, reassignment and audited thaw.
 
 This independent implementation uses only the Knowledge distribution and stdlib.
-It does not grant cross-product activation, migration reassignment or thaw.
+Reassignment commits an assigned revision bound to a verified installation
+migration manifest, and audited thaw retires the freeze marker into the
+authority record only for a workspace assigned to this Knowledge. It does not
+grant cross-product activation or CUTOVER orchestration.
 """
 from __future__ import annotations
 import argparse
@@ -18,6 +21,8 @@ from contextlib import contextmanager
 BINDING = '.workspace-authority-v1.json'
 FORMAT = 'puddingknowledge-writer-authority/v1'
 MAX_BYTES = 65536
+SELF = 'puddingknowledge'
+WRITERS = ('puddingclaw', 'puddingknowledge')
 
 
 def encoded(value):
@@ -49,6 +54,32 @@ def read(path):
         value=json.loads(raw,object_pairs_hook=_unique)
         if not isinstance(value,dict) or encoded(value)!=raw:raise ValueError('Authority JSON must be canonical')
         return value
+    finally:os.close(fd)
+
+
+def _json(raw):
+    try:value=json.loads(raw.decode('utf-8'),object_pairs_hook=_unique)
+    except (UnicodeError,json.JSONDecodeError,ValueError) as error:raise ValueError('Installation manifest is not JSON') from error
+    if not isinstance(value,dict):raise ValueError('Installation manifest must be a JSON object')
+    return value
+
+
+def _read_private(path,limit=1024*1024):
+    path=_path(path)
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077 or info.st_size>limit:
+            raise ValueError('Installation evidence must be private owned regular and bounded')
+        raw=bytearray()
+        while len(raw)<=limit:
+            chunk=os.read(fd,min(65536,limit+1-len(raw)))
+            if not chunk:break
+            raw.extend(chunk)
+        if len(raw)>limit:raise ValueError('Installation evidence exceeds budget')
+        current=path.lstat()
+        if (current.st_dev,current.st_ino,current.st_size)!=(info.st_dev,info.st_ino,len(raw)):raise ValueError('Installation evidence changed')
+        return bytes(raw)
     finally:os.close(fd)
 
 
@@ -115,10 +146,11 @@ def journal(binding):
     if set(value)!={'format','binding_sha256','events'} or value['format']!=FORMAT or value['binding_sha256']!=digest(binding):
         raise ValueError('Authority journal binding mismatch')
     events=value['events']
-    if not isinstance(events,list) or not 1<=len(events)<=2:raise ValueError('Invalid authority history')
+    if not isinstance(events,list) or not events:raise ValueError('Invalid authority history')
+    base={'revision','previous','operation_id','state','writers','freeze_receipt_sha256','sha256'}
     previous=None
     for number,event in enumerate(events):
-        expected={'revision','previous','operation_id','state','writers','freeze_receipt_sha256','sha256'}
+        expected=base|({'active_installation_revision','migration_manifest_sha256','rollback_evidence_sha256'} if number>0 and number%2==0 else set())
         if not isinstance(event,dict) or set(event)!=expected or type(event['revision']) is not int or event['revision']!=number or event['previous']!=previous:
             raise ValueError('Invalid authority revision chain')
         payload={key:item for key,item in event.items() if key!='sha256'}
@@ -127,18 +159,35 @@ def journal(binding):
         if number==0:
             if event['state']!='existing_writer' or event['writers']!={'knowledge_catalog':'puddingknowledge','connector_jobs':'puddingknowledge'} or event['freeze_receipt_sha256'] is not None or event['operation_id']!=binding['enrollment_id']:
                 raise ValueError('Invalid existing writer enrollment')
-        elif event['state']!='suspended' or event['writers']!={'knowledge_catalog':None,'connector_jobs':None} or not isinstance(event['freeze_receipt_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',event['freeze_receipt_sha256']):
-            raise ValueError('Invalid suspended authority')
+        elif number%2:
+            if event['state']!='suspended' or event['writers']!={'knowledge_catalog':None,'connector_jobs':None} or not _hex64(event['freeze_receipt_sha256']):
+                raise ValueError('Invalid suspended authority')
+        else:
+            writers=event['writers']
+            if event['state']!='assigned' or not isinstance(writers,dict) or set(writers)!={'knowledge_catalog','connector_jobs'} or writers['knowledge_catalog']!=writers['connector_jobs'] or writers['knowledge_catalog'] not in WRITERS:
+                raise ValueError('Invalid assigned authority')
+            if not _hex64(event['freeze_receipt_sha256']) or event['freeze_receipt_sha256']!=events[number-1]['freeze_receipt_sha256']:
+                raise ValueError('Invalid assigned freeze commitment')
+            if not isinstance(event['active_installation_revision'],str) or not re.fullmatch(r'sha256:[0-9a-f]{64}',event['active_installation_revision']):
+                raise ValueError('Invalid active installation revision commitment')
+            if not _hex64(event['migration_manifest_sha256']):raise ValueError('Invalid migration manifest commitment')
+            if writers['knowledge_catalog']=='puddingclaw':
+                if not _hex64(event['rollback_evidence_sha256']):raise ValueError('Invalid rollback evidence commitment')
+            elif event['rollback_evidence_sha256'] is not None:raise ValueError('Invalid rollback evidence commitment')
         previous=event['sha256']
     return value
+
+
+def _hex64(value):
+    return isinstance(value,str) and re.fullmatch('[0-9a-f]{64}',value) is not None
 
 
 def _operation(value):
     if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,159}',value):raise ValueError('Invalid authority operation')
 
 
-def _event(number,previous,operation,state,writer,receipt):
-    value={'revision':number,'previous':previous,'operation_id':operation,'state':state,'writers':writer,'freeze_receipt_sha256':receipt}
+def _event(number,previous,operation,state,writer,receipt,**extra):
+    value={'revision':number,'previous':previous,'operation_id':operation,'state':state,'writers':writer,'freeze_receipt_sha256':receipt,**extra}
     return dict(value,sha256=digest(value))
 
 
@@ -148,7 +197,9 @@ def acquire_writer(home):
     root=Path(binding['authority']['path'])
     with lock(root,exclusive=False) as fd:
         current=journal(binding)['events'][-1]
-        if current['state']!='existing_writer':raise ValueError('Workspace has no active Knowledge writer authority')
+        if current['state']=='assigned':
+            if current['writers']['knowledge_catalog']!=SELF:raise ValueError('Workspace writer authority is assigned to another product')
+        elif current['state']!='existing_writer':raise ValueError('Workspace has no active Knowledge writer authority')
         if load_binding(home)!=binding:raise ValueError('Authority binding changed')
         return os.dup(fd)
 
@@ -192,8 +243,10 @@ def enroll(state_dir,authority,enrollment_id):
                  'workspace_manifest_sha256':hashlib.sha256(manifest).hexdigest()}
         with lock(root,exclusive=True):
             allowed={'.writer-authority.lock','journal.json'}
+            artifact=r'(?:thaw-receipt|freeze-marker)-rev[0-9]+\.json'
+            temporary=r'\.(?:journal\.json|(?:thaw-receipt|freeze-marker)-rev[0-9]+\.json)\.tmp-[0-9a-f]{16}'
             for entry in root.iterdir():
-                if entry.name not in allowed and not re.fullmatch(r'\.journal.json\.tmp-[0-9a-f]{16}',entry.name):raise ValueError('Unknown authority entry')
+                if entry.name not in allowed and not re.fullmatch(artifact,entry.name) and not re.fullmatch(temporary,entry.name):raise ValueError('Unknown authority entry')
             existing=home/BINDING;part=home/(BINDING+'.part')
             for path in (existing,part):
                 if path.exists() or path.is_symlink():
@@ -225,7 +278,7 @@ def suspend(state_dir,operation_id):
     _operation(operation_id);home=_path(state_dir);binding=load_binding(home)
     if binding is None:raise ValueError('Workspace is not enrolled')
     before=journal(binding)
-    if len(before['events'])==2:
+    if before['events'][-1]['state']=='suspended':
         if before['events'][-1]['operation_id']!=operation_id:raise ValueError('Authority suspension operation changed')
         raw,_=_read_record(home/FREEZE_NAME,links=1)
         if hashlib.sha256(raw).hexdigest()!=before['events'][-1]['freeze_receipt_sha256']:
@@ -234,20 +287,112 @@ def suspend(state_dir,operation_id):
     with lock(Path(binding['authority']['path']),exclusive=True):
         if load_binding(home)!=binding:raise ValueError('Authority binding changed')
         current=journal(binding)
-        event=_event(1,current['events'][0]['sha256'],operation_id,'suspended',{'knowledge_catalog':None,'connector_jobs':None},receipt['receipt_sha256'])
-        if len(current['events'])==2:
-            if current['events'][1]!=event:raise ValueError('Authority suspension changed')
+        head=current['events'][-1]
+        if head['state']=='suspended':
+            event=_event(head['revision'],current['events'][-2]['sha256'],operation_id,'suspended',{'knowledge_catalog':None,'connector_jobs':None},receipt['receipt_sha256'])
+            if head!=event:raise ValueError('Authority suspension changed')
         else:
+            event=_event(len(current['events']),head['sha256'],operation_id,'suspended',{'knowledge_catalog':None,'connector_jobs':None},receipt['receipt_sha256'])
             current=dict(current,events=[*current['events'],event]);_replace(Path(binding['authority']['path'])/'journal.json',current)
         return current
 
 
+def assign(state_dir,manifest,operation_id,writer,*,rollback_evidence=None):
+    from .workspace_freeze import FREEZE_NAME,PART_NAME,_read_record
+    from ..distribution.installation_manifest_validator import validate_manifest
+    _operation(operation_id);home=_path(state_dir)
+    if writer not in WRITERS:raise ValueError('Invalid assigned writer')
+    raw=_read_private(manifest)
+    document=_json(raw);validate_manifest(document)
+    commitment=hashlib.sha256(raw).hexdigest()
+    evidence=None
+    if writer==SELF:
+        if document['state']!='PREPARED':raise ValueError('Assignment to this Knowledge requires a PREPARED installation manifest')
+        if rollback_evidence is not None:raise ValueError('Forward assignment carries no rollback evidence')
+    else:
+        if document['state']!='ROLLED_BACK':raise ValueError('Rollback assignment requires a ROLLED_BACK installation manifest')
+        if rollback_evidence is None:raise ValueError('Rollback assignment requires rollback evidence')
+        evidence=hashlib.sha256(_read_private(rollback_evidence)).hexdigest()
+        if document.get('rollback_evidence_digest')!='sha256:'+evidence:raise ValueError('Rollback evidence does not match the installation manifest')
+    binding=load_binding(home)
+    if binding is None:raise ValueError('Workspace is not enrolled')
+    with lock(Path(binding['authority']['path']),exclusive=True):
+        if load_binding(home)!=binding:raise ValueError('Authority binding changed')
+        current=journal(binding)
+        head=current['events'][-1]
+        writers={'knowledge_catalog':writer,'connector_jobs':writer}
+        extra={'active_installation_revision':'sha256:'+commitment,'migration_manifest_sha256':commitment,'rollback_evidence_sha256':evidence}
+        if head['state']=='assigned':
+            event=_event(head['revision'],current['events'][-2]['sha256'],operation_id,'assigned',writers,head['freeze_receipt_sha256'],**extra)
+            if head!=event:raise ValueError('Authority assignment changed')
+            return current
+        if head['state']!='suspended':raise ValueError('Workspace writer authority is not suspended')
+        if head['operation_id']!=operation_id:raise ValueError('Authority assignment operation changed')
+        if (home/PART_NAME).exists() or (home/PART_NAME).is_symlink():raise ValueError('Freeze publication is incomplete')
+        marker,_=_read_record(home/FREEZE_NAME,links=1)
+        if hashlib.sha256(marker).hexdigest()!=head['freeze_receipt_sha256']:raise ValueError('Committed freeze receipt changed')
+        event=_event(len(current['events']),head['sha256'],operation_id,'assigned',writers,head['freeze_receipt_sha256'],**extra)
+        current=dict(current,events=[*current['events'],event])
+        _replace(Path(binding['authority']['path'])/'journal.json',current)
+        return current
+
+
+def thaw(state_dir,manifest,operation_id,*,_after_receipt=None):
+    from . import workspace
+    from .workspace_freeze import FREEZE_NAME,PART_NAME,_read_record
+    from ..distribution.installation_manifest_validator import validate_manifest
+    _operation(operation_id);home=_path(state_dir)
+    raw=_read_private(manifest)
+    document=_json(raw);validate_manifest(document)
+    commitment=hashlib.sha256(raw).hexdigest()
+    binding=load_binding(home)
+    if binding is None:raise ValueError('Workspace is not enrolled')
+    root=Path(binding['authority']['path'])
+    workspace_fd=workspace._open_lock(home)
+    try:
+        with lock(root,exclusive=True):
+            if load_binding(home)!=binding:raise ValueError('Authority binding changed')
+            current=journal(binding);head=current['events'][-1]
+            if head['state']!='assigned' or head['writers']['knowledge_catalog']!=SELF:raise ValueError('Workspace writer authority is not assigned to this Knowledge')
+            if head['operation_id']!=operation_id:raise ValueError('Authority thaw operation changed')
+            if head['migration_manifest_sha256']!=commitment or head['active_installation_revision']!='sha256:'+commitment:
+                raise ValueError('Authority thaw manifest changed')
+            receipt_path=root/f"thaw-receipt-rev{head['revision']}.json"
+            retired_path=root/f"freeze-marker-rev{head['revision']}.json"
+            marker_path=home/FREEZE_NAME
+            if (home/PART_NAME).exists() or (home/PART_NAME).is_symlink():raise ValueError('Freeze publication is incomplete')
+            receipt={'format':FORMAT,'state':'thawed','operation_id':operation_id,'writer':SELF,'revision':head['revision'],
+                     'revision_sha256':head['sha256'],'freeze_receipt_sha256':head['freeze_receipt_sha256'],
+                     'migration_manifest_sha256':head['migration_manifest_sha256'],'active_installation_revision':head['active_installation_revision']}
+            retired=retired_path.exists() or retired_path.is_symlink()
+            if retired:
+                if marker_path.exists() or marker_path.is_symlink():raise ValueError('Conflicting authority thaw state')
+                marker,_=_read_record(retired_path,links=1)
+                if hashlib.sha256(marker).hexdigest()!=head['freeze_receipt_sha256']:raise ValueError('Retired freeze marker changed')
+            else:
+                marker,_=_read_record(marker_path,links=1)
+                if hashlib.sha256(marker).hexdigest()!=head['freeze_receipt_sha256']:raise ValueError('Committed freeze receipt changed')
+            if receipt_path.exists() or receipt_path.is_symlink():
+                if read(receipt_path)!=receipt:raise ValueError('Authority thaw receipt changed')
+            else:
+                if retired:raise ValueError('Authority thaw receipt missing for retired freeze marker')
+                _replace(receipt_path,receipt)
+            if _after_receipt:_after_receipt()
+            if not retired:
+                os.rename(marker_path,retired_path)
+                _sync(home);_sync(root)
+            return {'state':'thawed','thaw_receipt_sha256':hashlib.sha256(encoded(receipt)).hexdigest(),'journal':current,'activation_allowed':True}
+    finally:os.close(workspace_fd)
+
+
 def main(argv=None):
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('action',choices=['enroll','suspend','status']);parser.add_argument('--state-dir',required=True);parser.add_argument('--authority');parser.add_argument('--operation-id')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('action',choices=['enroll','suspend','assign','thaw','status']);parser.add_argument('--state-dir',required=True);parser.add_argument('--authority');parser.add_argument('--operation-id');parser.add_argument('--manifest');parser.add_argument('--writer',choices=WRITERS);parser.add_argument('--rollback-evidence')
     args=parser.parse_args(argv)
     try:
         if args.action=='enroll':result=enroll(args.state_dir,args.authority,args.operation_id)
         elif args.action=='suspend':result=suspend(args.state_dir,args.operation_id)
+        elif args.action=='assign':result=assign(args.state_dir,args.manifest,args.operation_id,args.writer,rollback_evidence=args.rollback_evidence)
+        elif args.action=='thaw':result=thaw(args.state_dir,args.manifest,args.operation_id)['journal']
         else:
             binding=load_binding(_path(args.state_dir))
             if binding is None:raise ValueError('Workspace is not enrolled')
@@ -285,7 +430,10 @@ def retain_worker_admission(database, workspace_fd, authority_fd):
             copied=os.dup(source);duplicates.append(copied)
             fcntl.flock(copied,mode|fcntl.LOCK_NB)
         if binding is not None:
-            if journal(binding)['events'][-1]['state']!='existing_writer':raise ValueError('Worker writer authority is suspended')
+            head=journal(binding)['events'][-1]
+            if head['state']=='assigned':
+                if head['writers']['knowledge_catalog']!=SELF:raise ValueError('Worker writer authority is assigned to another product')
+            elif head['state']!='existing_writer':raise ValueError('Worker writer authority is suspended')
             if load_binding(home)!=binding:raise ValueError('Worker binding changed')
         return tuple(duplicates)
     except BaseException:
