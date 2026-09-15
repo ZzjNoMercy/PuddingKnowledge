@@ -61,6 +61,7 @@ def _read_console_surface_manifest(repo_root: Path) -> dict[str, Any]:
     if not isinstance(files, dict) or set(files) != {
         "index.html",
         "app.mjs",
+        "bitable.mjs",
         "local-boundary.mjs",
         "display-boundary.mjs",
         "contracts.mjs",
