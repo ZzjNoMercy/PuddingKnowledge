@@ -28,6 +28,7 @@ def test_stage_uses_backend_metadata_and_flat_owned_module_trees(tmp_path: Path)
         "pyproject.toml",
         "uv.lock",
         "manifest.json",
+        "LICENSE",
         "knowledge_platform",
         "knowledge_contracts",
     }
@@ -35,6 +36,8 @@ def test_stage_uses_backend_metadata_and_flat_owned_module_trees(tmp_path: Path)
     assert (output / "uv.lock").read_bytes() == (backend / "uv.lock").read_bytes()
     assert (output / "pyproject.toml").read_bytes() != (runtime_package / "pyproject.toml").read_bytes()
     assert (output / "uv.lock").read_bytes() != (runtime_package / "uv.lock").read_bytes()
+
+    assert (output / "LICENSE").read_bytes() == (backend / "LICENSE").read_bytes()
 
     for owned_name in ("knowledge_platform", "knowledge_contracts"):
         staged_files = {
