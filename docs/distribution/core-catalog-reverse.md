@@ -46,7 +46,10 @@ The JSON receipt reports hashes and counts without document values or secrets.
 This is `verified_inactive_core_metadata`, not a runnable rollback installation.
 New documents, changed bodies and physical file layout require a separate verified
 identity/file materializer and currently reject. Other changed target domains also
-reject. A metadata deletion does not remove its old body from a future Home.
+reject, unless `--other-catalog-disposition` supplies a verified
+`puddingknowledge-other-catalog-reverse/v1` receipt (see
+`other-catalog-reverse.md`) that covers exactly the changed non-core tables.
+A metadata deletion does not remove its old body from a future Home.
 Credential continuity, installation revision switching and audited thaw remain
 unimplemented here. Existing size/row limits apply. POSIX no-replace publication
 can leave private temporary artifacts after process death; this command does not

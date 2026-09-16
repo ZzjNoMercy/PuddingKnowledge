@@ -1,7 +1,9 @@
 """Build an inactive old-schema Catalog candidate from a verified core projection.
 
-This reverses representable metadata and deletion deltas. Content/layout changes,
-new identities and non-core domains require their own reverse migration first.
+This reverses representable metadata and deletion deltas. Content/layout changes
+and new identities require their own reverse migration first; other changed
+target domains refuse unless a verified non-core disposition receipt covers
+exactly the changed tables.
 """
 from contextlib import ExitStack
 import argparse
@@ -20,6 +22,7 @@ from ..catalog.rehearsal_runner import (
     _canonical_space, _canonical_asset, _canonical_dataset, _json_safe,
 )
 from . import sqlite_reverse_delta as sql
+from .other_catalog_reverse import verify_other_catalog_disposition
 
 FORMAT = 'puddingknowledge-core-catalog-reverse/v1'
 CORE = ('knowledge_spaces', 'knowledge_assets', 'knowledge_datasets')
@@ -169,7 +172,7 @@ def _inverse(legacy, before, after, revision):
     return result
 
 
-def build_core_catalog_reverse(source_snapshot, target_before, target_after, output, *, source_revision, _document_transform=None):
+def build_core_catalog_reverse(source_snapshot, target_before, target_after, output, *, source_revision, other_catalog_disposition=None, _document_transform=None):
     if not isinstance(source_revision, str) or not source_revision or len(source_revision) > 200:
         raise ValueError('Invalid source revision')
     sources = [sql._path(path) for path in (source_snapshot, target_before, target_after)]
@@ -190,9 +193,14 @@ def build_core_catalog_reverse(source_snapshot, target_before, target_after, out
             src, pre, post = [sql._snapshot(connection) for connection in connections]
             if sql._layout(pre) != sql._layout(post):
                 raise ValueError('Target schema changed')
-            for name in pre['tables']:
-                if name not in CORE and pre['tables'][name] != post['tables'][name]:
-                    raise ValueError('Unmapped target domain changed')
+            changed = {name for name in pre['tables']
+                       if name not in CORE and pre['tables'][name] != post['tables'][name]}
+            if changed and other_catalog_disposition is None:
+                raise ValueError('Unmapped target domain changed')
+            if other_catalog_disposition is not None:
+                verify_other_catalog_disposition(other_catalog_disposition, changed=changed,
+                                                 before=pre, after=post,
+                                                 before_sha256=digests[1], after_sha256=digests[2])
             legacy = _rows(copies[0], LEGACY)
             before, after = [_rows(path, CORE) for path in copies[1:]]
             inverse_legacy, inverse_before, inverse_after = legacy, before, after
@@ -304,6 +312,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source-snapshot', 'target-before', 'target-after', 'output', 'source-revision'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--other-catalog-disposition')
     args = parser.parse_args(argv)
     try:
         result = build_core_catalog_reverse(**vars(args))
