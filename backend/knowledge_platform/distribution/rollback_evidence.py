@@ -5,12 +5,15 @@ non-core Catalog disposition, document reverse and Wiki reverse) are driven by
 their own CLIs during the rehearsal.  This assembly re-verifies the four
 presented artifacts — canonical bytes, format/state, inert flags, exact
 cross-linkages and every committed output digest — then publishes one canonical
-evidence file.  The Harness rollback orchestrator binds sha256 of these exact
-bytes into the ROLLED_BACK installation manifest, and both products' writer
-rev-assignment must commit the same digest, so an exact retry must produce
-byte-identical evidence and any drift must refuse.  No writer is switched;
-rollback completion is the Harness orchestration plus assignment, never this
-file.
+evidence file.  The Wiki artifact is either the verified inactive Wiki
+candidate manifest or, for an installation that never had a Wiki domain, the
+verified absent-Wiki attestation (a proof of absence, never a fallback for a
+failed Wiki reverse).  The Harness rollback orchestrator binds sha256 of these
+exact bytes into the ROLLED_BACK installation manifest, and both products'
+writer rev-assignment must commit the same digest, so an exact retry must
+produce byte-identical evidence and any drift must refuse.  No writer is
+switched; rollback completion is the Harness orchestration plus assignment,
+never this file.
 """
 import argparse
 import hashlib
@@ -31,7 +34,9 @@ STATE = 'verified_rollback_evidence'
 # - core reverse receipt embedded in the document manifest:
 #   distribution/core_catalog_reverse.py (puddingknowledge-core-catalog-reverse/v1)
 # - Wiki reverse: distribution/wiki_reverse.py + distribution/wiki_reverse_plan.py
-#   (puddingknowledge-wiki-reverse/v1)
+#   (puddingknowledge-wiki-reverse/v1), or the proof-of-absence attestation
+#   distribution/wiki_reverse_absent.py (puddingknowledge-wiki-reverse-absent/v1)
+#   when the installation never had a Wiki domain
 # - non-core disposition: distribution/other_catalog_reverse.py (imported above)
 EXPORT_FORMAT = 'puddingknowledge-frozen-workspace-export/v1'
 EXPORT_STATE = 'verified_frozen_export'
@@ -41,6 +46,8 @@ CORE_FORMAT = 'puddingknowledge-core-catalog-reverse/v1'
 CORE_STATE = 'verified_inactive_core_metadata'
 WIKI_FORMAT = 'puddingknowledge-wiki-reverse/v1'
 WIKI_STATE = 'verified_inactive_wiki'
+WIKI_ABSENT_FORMAT = 'puddingknowledge-wiki-reverse-absent/v1'
+WIKI_ABSENT_STATE = 'verified_absent_wiki'
 FLAGS = ('rollback_completed', 'activation_allowed', 'installation_cutover_performed', 'indexes_rebuilt')
 EXPORT_FLAGS = ('activation_allowed', 'rollback_completed', 'legacy_schema_converted',
                 'credential_continuity_verified')
@@ -63,6 +70,19 @@ CORE_KEYS = {'format', 'state', 'source_revision', 'input_sha256', 'output_sha25
 WIKI_KEYS = {'format', 'plan', 'state', 'receipt', *CANDIDATE_FLAGS}
 WIKI_PLAN_KEYS = {'format', 'installation_id', 'source_revision', 'inputs', 'output_identity',
                   'output_inventory', 'delta', 'receipts'}
+WIKI_ABSENT_KEYS = {'format', 'plan', 'state', *CANDIDATE_FLAGS}
+WIKI_ABSENT_PLAN_KEYS = {'format', 'source_revision', 'inputs', 'output_identity', 'absence'}
+WIKI_ABSENT_EVIDENCE_KEYS = {'tables', 'wiki_evidence_present', 'wiki_schema_present'}
+# Mirrors distribution/wiki_reverse_absent.py INSPECTED_TABLES: the active
+# path's core domain tables, then the Wiki state tables (_STATE_TABLES).
+WIKI_ABSENT_TABLES = ('knowledge_spaces', 'knowledge_datasets', 'knowledge_assets',
+                      'knowledge_local_wiki_compilations', 'knowledge_local_wiki_schema_pages',
+                      'knowledge_local_wiki_schema_log', 'knowledge_wiki_authoring_state',
+                      'knowledge_wiki_authoring_pages', 'knowledge_wiki_authoring_commits')
+WIKI_ABSENT_CORE = frozenset(WIKI_ABSENT_TABLES[:3])
+# The absent attestation has no brain tree; the assembly binds the canonical
+# empty inventory digest in its place.
+EMPTY_INVENTORY = {'files': {}, 'directories': []}
 _MAX_EVIDENCE = 1024 * 1024
 _HEX = re.compile(r'[0-9a-f]{64}')
 
@@ -279,6 +299,58 @@ def _verify_wiki(path):
     return {'manifest': manifest, 'raw': raw, 'root': root, 'plan': plan}
 
 
+def _verify_wiki_absent(path):
+    """Verify the distribution/wiki_reverse_absent.py proof-of-absence attestation."""
+    manifest, raw = _read_canonical(path, files.MAX_JSON)
+    if set(manifest) != WIKI_ABSENT_KEYS or manifest['format'] != WIKI_ABSENT_FORMAT \
+            or manifest['state'] != WIKI_ABSENT_STATE:
+        raise RollbackEvidenceError('Not a verified absent Wiki attestation')
+    if any(manifest[flag] is not False for flag in CANDIDATE_FLAGS):
+        raise RollbackEvidenceError('Absent Wiki attestation is not inert')
+    plan = manifest['plan']
+    if not isinstance(plan, dict) or set(plan) != WIKI_ABSENT_PLAN_KEYS or plan['format'] != WIKI_ABSENT_FORMAT:
+        raise RollbackEvidenceError('Absent Wiki attestation plan is invalid')
+    root = path.parent
+    _output_identity(plan, root, owner='Wiki absence attestation')
+    # distribution/wiki_reverse_absent.py commits the same frozen export
+    # binding shape as distribution/wiki_reverse.py inputs.current_workspace;
+    # that export is verified by the producing CLI itself, so only the
+    # commitment's shape is re-checked here.
+    inputs = plan['inputs']
+    if not isinstance(inputs, dict) or set(inputs) != {'current_workspace'}:
+        raise RollbackEvidenceError('Absent Wiki input commitments are invalid')
+    workspace = inputs['current_workspace']
+    if not isinstance(workspace, dict) or set(workspace) != {'path', 'manifest_sha256', 'catalog_sha256'} \
+            or not isinstance(workspace['path'], str) \
+            or not _hex64(workspace['manifest_sha256']) or not _hex64(workspace['catalog_sha256']):
+        raise RollbackEvidenceError('Absent Wiki workspace commitment is invalid')
+    if not isinstance(plan['source_revision'], str) or not plan['source_revision'] \
+            or len(plan['source_revision']) > 200:
+        raise RollbackEvidenceError('Absent Wiki source revision is invalid')
+    absence = plan['absence']
+    if not isinstance(absence, dict) or set(absence) != WIKI_ABSENT_EVIDENCE_KEYS \
+            or absence['wiki_evidence_present'] is not False or absence['wiki_schema_present'] is not False:
+        raise RollbackEvidenceError('Absent Wiki evidence is invalid')
+    tables = absence['tables']
+    if not isinstance(tables, list) or len(tables) != len(WIKI_ABSENT_TABLES):
+        raise RollbackEvidenceError('Absent Wiki evidence is invalid')
+    for entry, name in zip(tables, WIKI_ABSENT_TABLES):
+        if not isinstance(entry, dict) or set(entry) != {'table', 'present', 'rows'} or entry['table'] != name \
+                or type(entry['rows']) is not int or entry['rows'] != 0 \
+                or not isinstance(entry['present'], bool) \
+                or (name in WIKI_ABSENT_CORE and entry['present'] is not True):
+            raise RollbackEvidenceError('Absent Wiki evidence is invalid')
+    return {'manifest': manifest, 'raw': raw, 'root': root, 'plan': plan}
+
+
+def _verify_wiki_artifact(path):
+    """Dispatch on the committed format: active Wiki candidate or absent attestation."""
+    manifest, _raw = _read_canonical(path, files.MAX_JSON)
+    if manifest.get('format') == WIKI_ABSENT_FORMAT:
+        return _verify_wiki_absent(path), WIKI_ABSENT_STATE
+    return _verify_wiki(path), WIKI_STATE
+
+
 def _publish(path, data):
     part = path.parent / (path.name + '.part')
     if part.exists() or part.is_symlink():
@@ -308,8 +380,9 @@ def assemble_rollback_evidence(frozen_export_manifest, other_catalog_disposition
     All four artifacts must be the exact files the step CLIs produced, still at
     their committed locations: the frozen export manifest, the non-core Catalog
     disposition receipt, the document_reverse v5 manifest and the wiki_reverse
-    manifest.  An exact retry publishes byte-identical evidence; a disagreeing
-    existing evidence file refuses.
+    manifest (or, for a Wiki-less installation, the wiki_reverse_absent
+    attestation).  An exact retry publishes byte-identical evidence; a
+    disagreeing existing evidence file refuses.
     """
     export_path, disposition_path, document_path, wiki_path, destination = [
         files._path(value) for value in (frozen_export_manifest, other_catalog_disposition,
@@ -323,7 +396,7 @@ def assemble_rollback_evidence(frozen_export_manifest, other_catalog_disposition
     export = _verify_frozen_export(export_path)
     disposition = _verify_disposition(disposition_path, export)
     document = _verify_document(document_path)
-    wiki = _verify_wiki(wiki_path)
+    wiki, wiki_state = _verify_wiki_artifact(wiki_path)
     for root in (export['root'], document['root'], wiki['root']):
         if destination == root or destination.is_relative_to(root):
             raise RollbackEvidenceError('Rollback evidence must live outside the step outputs')
@@ -339,11 +412,14 @@ def assemble_rollback_evidence(frozen_export_manifest, other_catalog_disposition
     if loaded['target_after_sha256'] != inputs[2]['sha256']:
         raise RollbackEvidenceError('Disposition and document reverse disagree on the target-after Catalog')
     # Source snapshot identity: the document plan's source is a legacy Catalog
-    # file and the Wiki plan's source is a brain tree, so byte identity is not
-    # equatable across the two formats; the shared source snapshot revision
-    # (distribution/wiki_reverse.py plan.source_revision vs
-    # distribution/document_reverse.py plan.source_revision and the embedded
-    # core receipt) is the strongest committed agreement.
+    # file and the Wiki plan's source is a brain tree (or, in the absent
+    # attestation, the same operator-committed revision standing for a brain
+    # tree that never existed), so byte identity is not equatable across the
+    # two formats; the shared source snapshot revision
+    # (distribution/wiki_reverse.py or distribution/wiki_reverse_absent.py
+    # plan.source_revision vs distribution/document_reverse.py
+    # plan.source_revision and the embedded core receipt) is the strongest
+    # committed agreement.
     if wiki['plan']['source_revision'] != document['plan']['source_revision']:
         raise RollbackEvidenceError('Wiki and document reverse disagree on the source snapshot revision')
     # Operation identity exists only on the frozen export plan
@@ -353,23 +429,27 @@ def assemble_rollback_evidence(frozen_export_manifest, other_catalog_disposition
     for role, state, raw in (('frozen_export', EXPORT_STATE, export['raw']),
                              ('other_catalog_disposition', DISPOSITION_STATE, disposition['raw']),
                              ('document_reverse', DOCUMENT_STATE, document['raw']),
-                             ('wiki_reverse', WIKI_STATE, wiki['raw'])):
+                             ('wiki_reverse', wiki_state, wiki['raw'])):
         artifacts.append({'role': role, 'state': state, 'sha256': hashlib.sha256(raw).hexdigest()})
+    linkages = {'frozen_export_manifest_sha256': artifacts[0]['sha256'],
+                'frozen_export_catalog_sha256': export['catalog_sha256'],
+                'frozen_export_normalized_catalog_sha256': export['normalized_catalog_sha256'],
+                'target_before_sha256': loaded['target_before_sha256'],
+                'target_after_sha256': loaded['target_after_sha256'],
+                'document_candidate_catalog_sha256': document['manifest']['catalog_sha256']}
+    if wiki_state == WIKI_ABSENT_STATE:
+        linkages['wiki_domain_attested_absent'] = True
+    wiki_inventory = wiki['plan']['output_inventory'] if wiki_state == WIKI_STATE else EMPTY_INVENTORY
     evidence = {'format': FORMAT, 'state': STATE,
                 'operation_id': export['operation_id'],
                 'source_revision': document['plan']['source_revision'],
                 'artifacts': artifacts,
-                'linkages': {'frozen_export_manifest_sha256': artifacts[0]['sha256'],
-                             'frozen_export_catalog_sha256': export['catalog_sha256'],
-                             'frozen_export_normalized_catalog_sha256': export['normalized_catalog_sha256'],
-                             'target_before_sha256': loaded['target_before_sha256'],
-                             'target_after_sha256': loaded['target_after_sha256'],
-                             'document_candidate_catalog_sha256': document['manifest']['catalog_sha256']},
+                'linkages': linkages,
                 'artifact_digests': {
                     'frozen_export_raw_inventory_sha256': control.digest(export['manifest']['plan']['source_inventory']),
                     'frozen_export_normalized_inventory_sha256': control.digest(export['manifest']['normalized_inventory']),
                     'document_bodies_inventory_sha256': control.digest(document['plan']['output_inventory']),
-                    'wiki_brain_inventory_sha256': control.digest(wiki['plan']['output_inventory'])},
+                    'wiki_brain_inventory_sha256': control.digest(wiki_inventory)},
                 **{flag: False for flag in FLAGS}}
     data = control.encoded(evidence)
     if len(data) > _MAX_EVIDENCE:

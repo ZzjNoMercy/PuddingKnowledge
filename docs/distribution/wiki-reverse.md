@@ -91,6 +91,57 @@ archive contract (50k files, 128 MiB per file, 2 GiB total, 32 MiB metadata, 256
 MiB Catalog) plus 500 compilations, 200 authoring commits and 32/256 MiB
 per-commit/total committed payloads.
 
+## Wiki-absent attestation v1
+
+An installation that never had a Wiki domain (an empty legacy `llm-wiki`, zero
+Wiki Spaces in its Catalog) has no brain to materialize, so the active path
+above cannot produce its receipt. For that case the installation exposes a
+verifiable proof of absence as a separate, explicitly chosen step — never a
+fallback when the active Wiki reverse rejects:
+
+```sh
+python -m knowledge_platform.distribution.wiki_reverse_absent \
+  --current-workspace /absolute/frozen-export \
+  --source-revision legacy-1 \
+  --output /absolute/new/private/attestation
+```
+
+`--current-workspace` is the same verified frozen export the active path
+consumes and it is re-verified identically (canonical manifest, plan digest,
+raw and normalized inventories, normalized Catalog digest all recomputed).
+`--source-revision` is the operator-committed source snapshot revision, bound
+under the same token rule the baseline archive's revision passes at migration
+time, so the rollback assembly's cross-chain revision agreement still holds.
+The output must not overlap the export.
+
+The normalized Catalog must then prove empty, fail-closed: integrity check,
+every table name against the known schema allow-list (any unknown table is
+schema drift and refuses), the active path's exact core selections
+(`knowledge_spaces`, `knowledge_datasets`, `knowledge_assets`) must return zero
+rows, and every Wiki state table the active path inspects
+(`knowledge_local_wiki_compilations`, `knowledge_local_wiki_schema_pages`,
+`knowledge_local_wiki_schema_log`, `knowledge_wiki_authoring_state`,
+`knowledge_wiki_authoring_pages`, `knowledge_wiki_authoring_commits`) must be
+absent or empty. Any Wiki row anywhere refuses, as does any `wiki-evidence` or
+`wiki-schema.json` member in the export's `raw/` tree. The core tables must
+exist with the active path's columns; missing tables refuse as drift, and
+present-but-empty Wiki state tables still attest.
+
+The output is `manifest.json` alone under an exclusive writer lock — there is
+no `brain/`, because there is nothing to restore. The receipt is
+`puddingknowledge-wiki-reverse-absent/v1`, state `verified_absent_wiki`,
+committing the `current_workspace` binding (`path`, `manifest_sha256`,
+`catalog_sha256`, the same shape as the active plan's
+`inputs.current_workspace`), the source revision, the output identity and the
+exact absence evidence: the inspected table set with per-table
+`present`/`rows: 0` proofs and the two export-member absence flags. The same
+five inert flags stay false. Publication is canonical, budgeted and atomic; an
+exact retry finds byte-identical receipt bytes and reports `idempotent`, a
+changed or foreign receipt refuses without repair, and the export is re-read
+before publication so drift refuses. Failure stdout carries only the fixed
+`wiki_reverse_absent_rejected` code and `activation_allowed=false`.
+
+
 Known limits: schema bundle updates during the installation are not reversed
 (`schema_unchanged` only); legacy unprojected authoring state
 (`catalog_projected=0`) rejects rather than being projected retroactively;

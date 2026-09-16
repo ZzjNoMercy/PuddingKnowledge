@@ -6,9 +6,13 @@ its own CLI and deterministic receipt: the frozen workspace export
 (`distribution/other_catalog_reverse.py`), the document reverse
 (`distribution/document_reverse.py`, embedding the
 `distribution/core_catalog_reverse.py` receipt) and the Wiki reverse
-(`distribution/wiki_reverse.py`). The Harness rollback orchestrator advances
-the installation manifest to `ROLLED_BACK` bound to `sha256:<digest of a
-single rollback evidence file>` and requires both products' writer
+(`distribution/wiki_reverse.py`). For an installation that never had a Wiki
+domain, the fourth receipt is instead the Wiki-absent attestation
+(`distribution/wiki_reverse_absent.py`, a verifiable proof of absence — see
+`docs/distribution/wiki-reverse.md`); it is a distinct operator-chosen step,
+never a fallback for a failed Wiki reverse. The Harness rollback orchestrator
+advances the installation manifest to `ROLLED_BACK` bound to `sha256:<digest
+of a single rollback evidence file>` and requires both products' writer
 rev-assignment to commit that same digest. This assembler verifies a presented
 set of the four receipts and publishes exactly that file:
 
@@ -20,6 +24,10 @@ python -m knowledge_platform.distribution.rollback_evidence \
   --wiki-reverse-manifest /absolute/wiki-reverse/manifest.json \
   --output /absolute/new/rollback-evidence.json
 ```
+
+`--wiki-reverse-manifest` accepts either Wiki receipt: the verified inactive
+Wiki candidate manifest or the verified absent-Wiki attestation; the committed
+`format` selects the contract. Everything else is unchanged.
 
 This is VERIFY-AND-BIND only: the heavy steps are never re-run. Every artifact
 must still live at the exact private directory its producing CLI committed as
@@ -36,7 +44,8 @@ For each of the four artifacts, read back as private owned files:
   JSON discipline (sorted keys, unique keys, UTF-8, trailing newline);
 - envelope: exact key sets, `format` and terminal `state`
   (`verified_frozen_export`, `verified_other_catalog_disposition`,
-  `verified_inactive_documents`, `verified_inactive_wiki`);
+  `verified_inactive_documents`, `verified_inactive_wiki` or
+  `verified_absent_wiki`);
 - inert flags: every flag the artifact commits stays false —
   `activation_allowed`, `rollback_completed`, `legacy_schema_converted`,
   `credential_continuity_verified`, `indexes_rebuilt`,
@@ -74,31 +83,42 @@ it:
   of `<document output>/catalog.sqlite3`, and its `source_revision` must equal
   the document plan's.
 - `plan.source_revision` of the Wiki reverse
-  (`distribution/wiki_reverse.py`) must equal the document plan's
-  `source_revision` — the shared source snapshot revision. The two formats
-  commit different source artifact kinds (a legacy Catalog file vs a Wiki
-  brain tree), so byte identity is not equatable; the revision agreement is
-  the strongest committed binding.
+  (`distribution/wiki_reverse.py`) or of the Wiki-absent attestation
+  (`distribution/wiki_reverse_absent.py`) must equal the document plan's
+  `source_revision` — the shared source snapshot revision. The active Wiki
+  format commits a brain tree source and the absent attestation commits the
+  same operator-supplied revision standing for a brain tree that never
+  existed, so byte identity is not equatable across formats; the revision
+  agreement is the strongest committed binding.
 - Operation identity: only the frozen export plan carries one
   (`plan.operation_id`, the suspension operation). It is validated and
   recorded; no other artifact format commits an operation identity, so there
   is no second carrier to bind.
 - The Wiki reverse's own frozen export binding
   (`plan.inputs.current_workspace.{manifest_sha256,catalog_sha256}`,
-  `distribution/wiki_reverse.py`) belongs to the separate Wiki workspace
-  export, which is not an input to this assembly; it is verified by the Wiki
-  reverse CLI at production time and is transitively bound by the Wiki
-  receipt's own digest. Only the commitment's shape is re-checked.
+  `distribution/wiki_reverse.py`; the absent attestation commits the same
+  shape, `distribution/wiki_reverse_absent.py`) belongs to the separate Wiki
+  workspace export, which is not an input to this assembly; it is verified by
+  the producing CLI at production time and is transitively bound by the Wiki
+  receipt's own digest. Only the commitment's shape is re-checked. The absent
+  attestation additionally commits its exact absence evidence (the inspected
+  table set with per-table `present`/`rows: 0` proofs and the export-member
+  absence flags), whose shape is fully re-validated here.
 
 ## Evidence file and determinism
 
 The evidence is canonical JSON, `puddingknowledge-rollback-evidence/v1`,
 `state=verified_rollback_evidence`, carrying: the recorded `operation_id` and
 `source_revision`; `artifacts` — per-artifact `{role, state, sha256}` over the
-four presented files in chain order; `linkages` — the derived cross-linkage
-digests (export manifest, raw and normalized Catalog, target-before/after,
-document candidate Catalog); `artifact_digests` — canonical digests of the
-four re-verified committed inventories; and fail-closed flags
+four presented files in chain order (the `wiki_reverse` entry carries
+`verified_inactive_wiki` or `verified_absent_wiki`, so downstream consumers
+can distinguish the variant); `linkages` — the derived cross-linkage digests
+(export manifest, raw and normalized Catalog, target-before/after, document
+candidate Catalog), plus `wiki_domain_attested_absent=true` when the Wiki
+domain is attested absent; `artifact_digests` — canonical digests of the four
+re-verified committed inventories (with no brain tree in the absent case,
+`wiki_brain_inventory_sha256` binds the canonical digest of the empty
+inventory `{files: {}, directories: []}`); and fail-closed flags
 `rollback_completed=false` (completion is the Harness orchestration plus
 assignment, never this file), `activation_allowed=false`,
 `installation_cutover_performed=false`, `indexes_rebuilt=false`. It contains
@@ -125,7 +145,9 @@ more before publication so drift during assembly refuses.
    (`distribution/other_catalog_reverse.py`), materialize the document
    candidate (`distribution/document_reverse.py`), and materialize the Wiki
    candidate (`distribution/wiki_reverse.py`, against its own workspace
-   export).
+   export) — or, when the installation never had a Wiki domain, attest its
+   absence (`distribution/wiki_reverse_absent.py`, against the same kind of
+   workspace export).
 2. Assemble the rollback evidence from the four receipts (this tool).
 3. Hand the evidence file to the Harness rollback orchestrator; it advances
    the installation manifest to `ROLLED_BACK` bound to the evidence digest
