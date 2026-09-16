@@ -41,9 +41,9 @@ retry after interruption. Completed missing/tampered raw, normalized files or
 reports reject before any attempted regeneration. Atomic manifest replacement
 may leave private diagnostic temporary files that are never active state.
 
-The command inherits existing limits: 64 MiB per raw file, 512 MiB raw aggregate,
+The command inherits existing limits: 128 MiB per raw file, 2 GiB raw aggregate,
 50,000 raw entries; each SQLite family is bounded by the normalization component
-(64 MiB per member, 256 MiB bundle, five-second materialization). Full legacy
+(256 MiB per member, 512 MiB bundle, five-second materialization). Full legacy
 schema conversion, reverse file-layout mapping, credentials, unified installation
 revision and thaw are not implemented by this exporter. Both-product suspension
 must still be coordinated by the Harness writer barrier before installation

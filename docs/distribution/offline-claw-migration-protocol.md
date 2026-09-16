@@ -45,6 +45,19 @@ indexes and knowledge credentials remain pending. Every receipt states
 `credential_rebind_required=true`. This is not the full installation Migration
 Manifest, compatibility gate, source snapshot acquisition, or CUTOVER authority.
 
+## Migration byte budgets
+
+The byte budgets were originally sized for small synthetic fixtures. Spec §11.20
+item 10 makes a rehearsal against a real PuddingClaw data copy a hard acceptance
+gate, and the measured real Home exceeded the old limits: the largest single
+document is 67 MB, referenced document bytes total ≈268 MB, Wiki sessions total
+≈300 MiB and the Catalog is 50 MB. The budgets are now uniform across the
+document, Wiki archive and Catalog domains: 128 MiB per migration file, 2 GiB
+per domain or receipt total, and 256 MiB per Catalog normalization/snapshot
+file (512 MiB per raw sidecar bundle). The source-snapshot envelope enforced by
+the Harness orchestrator (2 GiB per file, 16 GiB total) remains the outer
+denial-of-service gate.
+
 Retries require identical request bytes and re-run source/target verification.
 A process lock serializes output. A crash after candidate publication resumes
 before receipt publication; immutable plan/receipt publication never replaces an
@@ -77,8 +90,8 @@ additionally covers `normalization/plan.json`, `normalization/report.json` and
 `normalization/catalog.sqlite3`. The report binds the source plan digest and
 normalized file digest/size; no host source paths or secret values are printed.
 Inputs with no sidecars keep the existing direct offline converter and artifact
-layout for compatibility. Normalization is limited to 64 MiB per member,
-256 MiB per raw bundle and a 5 second SQLite materialization budget.
+layout for compatibility. Normalization is limited to 256 MiB per member,
+512 MiB per raw bundle and a 5 second SQLite materialization budget.
 
 This does not acquire source-writer authority or migrate other Catalog domains.
 It consumes an immutable approved snapshot, and all existing partial/inactive

@@ -28,7 +28,7 @@ class MigratedWikiWorkspaceError(RuntimeError):
 
 _PROVIDER = "knowledge_local_published_wiki"
 _MAX_MANIFEST = 32 * 1024 * 1024
-_MAX_CATALOG = 64 * 1024 * 1024
+_MAX_CATALOG = 256 * 1024 * 1024
 
 
 def _real(value: Path | str) -> Path:

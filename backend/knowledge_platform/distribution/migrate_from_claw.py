@@ -14,7 +14,7 @@ from .catalog_snapshot import _path, _identity
 from .catalog_normalization import normalize_catalog, _digest_file as _normalization_digest
 from .document_migration import TOKEN, _digest, _encode, _read, _sync_directory, prepare_document_migration
 from .sqlite_reverse_delta import _file_digest
-from .wiki_archive import prepare_wiki_archive, verify_archive
+from .wiki_archive import MAX_FILE as _WIKI_MAX_FILE, prepare_wiki_archive, verify_archive
 
 REQUEST_FORMAT = 'puddingknowledge-migrate-from-claw-request/v1'
 REQUEST_FORMAT_V2 = 'puddingknowledge-migrate-from-claw-request/v2'
@@ -66,7 +66,7 @@ def _verify_artifacts(output, artifacts):
         if not path.is_relative_to(output): raise ValueError('Artifact escaped output')
         info = path.stat(); _identity(path)
         total += info.st_size
-        if info.st_mode & 0o077 or info.st_size > 64*1024*1024 or total > 256*1024*1024:
+        if info.st_mode & 0o077 or info.st_size > 128*1024*1024 or total > 2*1024**3:
             raise ValueError('Artifacts exceed protocol budget')
         if not isinstance(expected, str) or 'sha256:'+_file_digest(path) != expected:
             raise ValueError('Completed artifact changed')
@@ -187,7 +187,7 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             path = _path(candidate/relative)
             _identity(path)
             info = path.stat(); total += info.st_size
-            if info.st_mode & 0o077 or info.st_size > 64*1024*1024 or total > 256*1024*1024:
+            if info.st_mode & 0o077 or info.st_size > 128*1024*1024 or total > 2*1024**3:
                 raise ValueError('Candidate exceeds artifact budget')
             actual = 'sha256:'+_file_digest(path)
             if actual != expected: raise ValueError('Candidate artifact changed')
@@ -195,7 +195,7 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         if wiki_root is not None:
             wiki_manifest = verify_archive(output/'wiki')
             for name in ('plan.json', 'checkpoint.json', 'manifest.json'):
-                artifacts['wiki/'+name] = _digest(_private_read(output/'wiki'/name, 32*1024*1024))
+                artifacts['wiki/'+name] = _digest(_private_read(output/'wiki'/name, _WIKI_MAX_FILE))
             for name, fact in wiki_manifest['files'].items():
                 artifacts['wiki/archive/'+name] = 'sha256:'+fact['sha256']
         _verify_artifacts(output, artifacts)

@@ -23,7 +23,7 @@ directories are re-inventoried to detect late additions. Private copying checkpo
 support exact retry and real SIGKILL, including during resource publication.
 Completed missing files or empty directories reject without repair. Package
 metadata is bounded to 1 MiB and actual output bytes (including blob/tree duplicates)
-count toward the existing 256 MiB budget. Unsupported CSS/dynamic content rejects;
+count toward the existing 2 GiB budget. Unsupported CSS/dynamic content rejects;
 remote URLs are recorded but never fetched. Embedded binary references are opaque.
 
 Owned document workspace v4 validates its complete resources inventory on load.

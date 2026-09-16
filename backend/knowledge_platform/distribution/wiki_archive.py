@@ -13,8 +13,8 @@ import stat
 
 FORMAT = 'puddingknowledge-wiki-archive/v1'
 MAX_FILES = 50_000
-MAX_FILE = 64 * 1024 * 1024
-MAX_TOTAL = 512 * 1024 * 1024
+MAX_FILE = 128 * 1024 * 1024
+MAX_TOTAL = 2 * 1024**3
 MAX_JSON = 32 * 1024 * 1024
 FLAGS = {'archive_only': True, 'activation_allowed': False,
          'complete_installation_migration': False, 'wiki_semantics_verified': False}

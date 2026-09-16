@@ -117,9 +117,9 @@ def _source_commitments(document, wiki):
             raise CombinedWorkspaceError("document candidate inventory is invalid")
         total = 0
         for relative, expected in files.items():
-            data = documents_verifier._read(document / relative, 64 * 1024 * 1024)
+            data = documents_verifier._read(document / relative, documents_verifier._MAX_CATALOG if relative == "catalog.sqlite3" else documents_verifier._MAX_BLOB)
             total += len(data)
-            if total > 256 * 1024 * 1024 or documents_verifier._digest(data) != expected:
+            if total > documents_verifier._MAX_TOTAL or documents_verifier._digest(data) != expected:
                 raise CombinedWorkspaceError("document candidate changed")
         document_digest = documents_verifier._digest(raw)
         document_identity = (document.stat().st_dev, document.stat().st_ino)

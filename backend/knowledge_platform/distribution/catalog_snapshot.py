@@ -11,7 +11,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-MAX_BYTES = 64 * 1024 * 1024
+MAX_BYTES = 256 * 1024 * 1024
 FORMAT = 'puddingknowledge-catalog-snapshot/v1'
 
 

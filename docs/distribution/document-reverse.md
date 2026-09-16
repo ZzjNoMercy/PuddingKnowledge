@@ -80,7 +80,7 @@ unknown metadata paths and binary embedded references are not covered. `indexes_
 `installation_path_rebound`, activation and rollback completion stay false.
 
 The cooperative offline/POSIX contract, existing SQLite schema restrictions and
-64 MiB/file and 512 MiB body limits apply. The command requires all current
+128 MiB/file and 2 GiB body limits apply. The command requires all current
 primary document bindings; it does not infer paths from URI strings or discover
 credentials. Receipt contains IDs/counts/digests, not document bodies or secret
 values. Exact-output retry requires unchanged input snapshots and output path.

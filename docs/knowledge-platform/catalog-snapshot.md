@@ -25,7 +25,7 @@ checked after acquiring the lock and before releasing it; replacing the source
 file rejects publication. This assumes normal SQLite writers, not a filesystem
 sandbox against another process that can replace directories or databases.
 
-Budgets: 64 MiB main database, individual sidecars and resulting database; timeout
+Budgets: 256 MiB main database, individual sidecars and resulting database; timeout
 is positive and at most 60 seconds. Snapshot pages are checked during backup.
 Lock contention and verification failures remove temporary output and release
 connections. Process death releases the SQLite lock, but may leave a private

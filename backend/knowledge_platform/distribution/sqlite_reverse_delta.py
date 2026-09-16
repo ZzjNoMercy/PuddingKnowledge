@@ -14,7 +14,7 @@ import tempfile
 from urllib.parse import quote
 
 _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,127}$')
-_MAX_DATABASE_BYTES = 64 * 1024 * 1024
+_MAX_DATABASE_BYTES = 256 * 1024 * 1024
 _MAX_ROWS = 100_000
 
 

@@ -27,9 +27,9 @@ _PROVIDER = 'knowledge_migrated_documents'
 _FORMAT = 'puddingknowledge-document-migration/v3'
 _ID = re.compile(r'[A-Za-z0-9._:-]{1,160}')
 _BLOB = re.compile(r'blobs/[0-9a-f]{64}')
-_MAX_CATALOG = 64 * 1024 * 1024
-_MAX_BLOB = 32 * 1024 * 1024
-_MAX_TOTAL = 256 * 1024 * 1024
+_MAX_CATALOG = 256 * 1024 * 1024
+_MAX_BLOB = 128 * 1024 * 1024
+_MAX_TOTAL = 2 * 1024**3
 
 
 def _real(path):

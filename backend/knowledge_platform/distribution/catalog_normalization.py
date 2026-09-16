@@ -12,8 +12,8 @@ import time
 from .catalog_snapshot import _identity, _path
 from .document_migration import _encode, _sync_directory
 
-MAX_BYTES = 64 * 1024**2
-MAX_BUNDLE_BYTES = 256 * 1024**2
+MAX_BYTES = 256 * 1024**2
+MAX_BUNDLE_BYTES = 512 * 1024**2
 MAX_SECONDS = 5.0
 FORMAT = 'puddingknowledge-catalog-normalization/v1'
 _SUFFIXES = ('', '-wal', '-shm', '-journal')

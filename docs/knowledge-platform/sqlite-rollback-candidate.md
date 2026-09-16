@@ -47,7 +47,7 @@ output is never overwritten. Temporary data uses a private directory and 0600
 files. Reports contain digests and per-table insert/update/delete counts, not
 raw rows, SQL or credentials.
 
-Current bounds are 64 MiB per input and logical row set, 100,000 rows per database,
+Current bounds are 256 MiB per input and logical row set, 100,000 rows per database,
 256 owned tables and 8 MiB SQLite values. Owned tables need non-null unique primary
 keys. Triggers, views, virtual/generated-column tables, AUTOINCREMENT schemas and
 schema transformations are unsupported and rejected. Foreign-key actions that
