@@ -69,7 +69,10 @@ tool; v5 refuses to adopt incompatible plans.
 
 This is `verified_inactive_documents`. The candidate's absolute storage paths
 make its primary documents readable in this exact directory; moving it requires
-an audited path-rebinding step. It is not a complete relocated Claw Home. Relative images/linked files and explicitly bound known filesystem attachment
+the audited path-rebinding step (`installation_path_rebind`, format
+`puddingknowledge-installation-path-rebind/v1`; see
+`docs/distribution/installation-path-rebind.md`) run against the tree at its
+final installation location. It is not a complete relocated Claw Home. Relative images/linked files and explicitly bound known filesystem attachment
 metadata are materialized. Known virtual routes are bound to the candidate bodies directory. Vector/search
 indices and chunk metadata require rebuild before installation activation. Wiki, other Catalog domains, credential continuity, unified installation
 revision and audited thaw remain open. Graph closure proves the supported relative references only; external URLs,
