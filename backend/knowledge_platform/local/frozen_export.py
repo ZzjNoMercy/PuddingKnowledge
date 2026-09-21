@@ -125,7 +125,7 @@ def export_frozen_workspace(state_dir,output,operation_id,*,_after_copy=None):
                 raise ValueError('Export plan changed')
         else:
             if any(p.name!='.writer-authority.lock' for p in stage.iterdir()):raise ValueError('Unowned export stage')
-            authority._replace(path,manifest)
+            authority._replace(path,manifest,reader=_read_manifest)
         _raw_stage(stage,original)
         if complete:
             if files._inventory(stage/'raw',private=True)!=original or files._inventory(stage/'normalized',private=True)!=previous['normalized_inventory']:
@@ -156,7 +156,7 @@ def export_frozen_workspace(state_dir,output,operation_id,*,_after_copy=None):
         result=dict(manifest,state='verified_frozen_export',normalized_databases=reports,
                     normalized_inventory=files._inventory(stage/'normalized',private=True))
         if complete and previous!=result:raise ValueError('Completed export receipt changed')
-        authority._replace(path,result)
+        authority._replace(path,result,reader=_read_manifest)
         return {'format':FORMAT,'state':'verified_frozen_export','plan_sha256':manifest['plan_sha256'],
                 'normalized_databases':reports,'file_count':len(original['files']),'idempotent':complete,
                 'workspace_writers_suspended':True,'activation_allowed':False,'rollback_completed':False,

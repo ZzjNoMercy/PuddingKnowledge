@@ -58,6 +58,16 @@ def test_suspension_checkpoint_failure_remains_frozen(roots,monkeypatch):
  assert (state/'.workspace-freeze-v1.json').exists() and len(journal(load_binding(state))['events'])==1
  monkeypatch.setattr(module,'_replace',original);assert suspend(state,'suspend-1')['events'][-1]['state']=='suspended'
 
+def test_replace_reader_relaxes_only_the_read_budget(tmp_path):
+ import knowledge_platform.local.writer_authority as module
+ target=tmp_path/'manifest.json'
+ big={'entries':['x'*64]*2000}
+ assert len(module.encoded(big))>module.MAX_BYTES
+ module._replace(target,big)
+ with pytest.raises(ValueError): module._replace(target,big)  # default 64KiB authority reader refuses
+ module._replace(target,big,reader=lambda p: json.loads(p.read_bytes()))
+ assert json.loads(target.read_bytes())==big
+
 def test_nonprivate_workspace_rejected_without_chmod(roots):
  state,authority=roots;state.chmod(0o755)
  with pytest.raises(Exception):enroll(state,authority,'enroll-1')

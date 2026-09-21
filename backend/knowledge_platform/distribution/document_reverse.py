@@ -167,7 +167,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         elif any(p.name != '.writer-authority.lock' for p in stage.iterdir()):
             raise ValueError('Unowned reverse output')
         else:
-            control._replace(marker, base)
+            control._replace(marker, base, reader=_json_file)
         complete = previous is not None and previous['state'] == 'verified_inactive_documents'
         for entry in stage.iterdir():
             if entry.name in {'.writer-authority.lock','manifest.json','bodies','catalog.sqlite3','catalog.sqlite3.reverse-part'}:
@@ -268,7 +268,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             raise ValueError('Reverse control identity changed')
         if len(control.encoded(result)) > files.MAX_JSON:
             raise ValueError("Completed reverse manifest exceeds budget")
-        if not complete:control._replace(marker,result)
+        if not complete:control._replace(marker,result,reader=_json_file)
         return {'format':FORMAT,'state':result['state'],'plan_sha256':control.digest(plan),
                 'identity_map':result['identity_map'],'document_count':len(facts),'catalog_sha256':result['catalog_sha256'],
                 'idempotent':complete,'document_bodies_materialized':True,

@@ -210,8 +210,10 @@ def _sync(root):
     finally:os.close(fd)
 
 
-def _replace(path,value):
-    if path.exists() or path.is_symlink():read(path)
+def _replace(path,value,*,reader=None):
+    # The default reader enforces the small authority-file budget; callers
+    # replacing large protocol manifests pass their own bounded private reader.
+    if path.exists() or path.is_symlink():(reader or read)(path)
     temporary=path.with_name('.'+path.name+'.tmp-'+secrets.token_hex(8))
     fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     try:

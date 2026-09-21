@@ -370,7 +370,7 @@ def prepare_wiki_reverse(source_snapshot, baseline_archive, current_workspace, o
         elif any(entry.name != '.writer-authority.lock' for entry in stage.iterdir()):
             raise ValueError('Unowned reverse output')
         else:
-            control._replace(marker, base)
+            control._replace(marker, base, reader=_json_file)
         complete = previous is not None and previous['state'] == _COMPLETE
         for entry in stage.iterdir():
             if entry.name in {'.writer-authority.lock', 'manifest.json', 'brain'}:
@@ -442,7 +442,7 @@ def prepare_wiki_reverse(source_snapshot, baseline_archive, current_workspace, o
         if len(control.encoded(result)) > files.MAX_JSON:
             raise ValueError('Completed reverse manifest exceeds budget')
         if not complete:
-            control._replace(marker, result)
+            control._replace(marker, result, reader=_json_file)
         return {'format': FORMAT, 'state': result['state'], 'plan_sha256': control.digest(plan_record),
                 'installation_id': manifest['installation_id'], 'source_revision': manifest['source_revision'],
                 'delta': result['receipt']['delta'], 'receipts_written': len(result['receipt']['receipts']),

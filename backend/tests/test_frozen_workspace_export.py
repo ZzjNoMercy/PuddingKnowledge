@@ -109,6 +109,22 @@ def test_frozen_export_copies_raw_workspace_and_normalizes_wal_catalog(tmp_path)
         writer.close()
 
 
+def test_frozen_export_manifest_larger_than_authority_read_budget_completes(tmp_path):
+    state, _authority, writer = _fixture(tmp_path)
+    try:
+        wiki = state / "wiki"
+        for index in range(2000):
+            note = wiki / f"note-{index:04}.md"
+            note.write_text(f"# note {index}\n", encoding="utf-8")
+            note.chmod(0o600)
+        first = _export(state, tmp_path / "export")
+        assert first["state"] == "verified_frozen_export" and first["idempotent"] is False
+        assert (tmp_path / "export" / "manifest.json").stat().st_size > 65536
+        assert _export(state, tmp_path / "export") == {**first, "idempotent": True}
+    finally:
+        writer.close()
+
+
 def test_frozen_export_is_idempotent_and_rejects_completed_raw_tamper(tmp_path):
     state, _authority, writer = _fixture(tmp_path)
     try:
