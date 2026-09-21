@@ -10,7 +10,9 @@ offline brain root, including unknown regular files and empty directories. It
 checks every declared Raw snapshot against its bytes, bounds the inventory and
 refuses links and special files. The output is private and inactive. The source
 must already be a consistent offline snapshot; this command does not stop old
-writers or prove an installed source version.
+writers or prove an installed source version. An entirely empty brain root is
+preserved as an empty archive — its absent Raw journal is vacuously
+consistent — while any preserved content without the journal still refuses.
 
 ```sh
 python -m knowledge_platform.distribution.wiki_archive \

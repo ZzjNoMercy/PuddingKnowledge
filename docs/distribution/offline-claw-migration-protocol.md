@@ -28,6 +28,11 @@ assertion bound into the request digest, not proof of whole-installation
 compatibility. Actual document schema and content are verified by the existing
 document migration converter. Paths are explicit; credentials are not discovered.
 
+Requests are ordinarily produced by the Knowledge-side generator described in
+`claw-migration-request.md`, which derives a fully pre-verified v2 request
+(including `original_bindings` and `attachment_bindings`) from a quiesced
+legacy Catalog copy and the snapshot payload.
+
 Success stdout is one `puddingknowledge-migrate-from-claw-receipt/v1` JSON object:
 `request_digest` binds the exact request bytes, `source_snapshot_identity` binds
 the approved absolute snapshot root independently supplied by the orchestrator.

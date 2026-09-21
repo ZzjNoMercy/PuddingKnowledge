@@ -150,6 +150,9 @@ def _metadata(path):
 
 
 def _raw(root, inventory):
+    # An entirely empty brain root holds no Raw snapshots; the absent journal
+    # is vacuously consistent. Any preserved content without it still refuses.
+    if not inventory['files'] and not inventory['directories']: return
     data, fact = _read(root / 'raw/manifest.jsonl', limit=MAX_JSON)
     if inventory['files'].get('raw/manifest.jsonl') != fact: raise ValueError('Raw manifest changed')
     seen = set()
