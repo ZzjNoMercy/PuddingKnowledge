@@ -44,7 +44,8 @@ def _copy(source, destination, fact):
 
 
 def prepare_document_reverse(source_snapshot, target_before, target_after, body_root, bindings,
-                             output, *, source_revision, attachment_bindings=None, virtual_roots=None, _after_copy=None):
+                             output, *, source_revision, attachment_bindings=None, virtual_roots=None,
+                             resolution_aliases=None, _after_copy=None):
     paths = [sql._path(value) for value in (source_snapshot, target_before, target_after)]
     root, stage = [files._path(value) for value in (body_root, output)]
     files._check(root.stat(), directory=True)
@@ -116,7 +117,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             attachment_directories.update(str(Path(relative)/name) for name in inventory_facts['directories'])
             for name in inventory_facts['files']:
                 primary.setdefault(str(Path(relative)/name), None)
-    graph = collect_document_dependencies(root, primary, virtual_roots=virtual_roots)
+    graph = collect_document_dependencies(root, primary, virtual_roots=virtual_roots, resolution_aliases=resolution_aliases)
     for value in attachment_facts.values():
         relative = value['input_relative']
         claimed_files = {relative: {key:value[key] for key in ('sha256','size_bytes')}} if value['kind'] == 'file' else {str(Path(relative)/name): fact for name, fact in value['inventory']['files'].items()}
@@ -287,12 +288,15 @@ def main(argv=None):
     for name in ('source-snapshot','target-before','target-after','body-root','bindings','output','source-revision'):
         parser.add_argument('--'+name,required=True)
     parser.add_argument("--attachment-bindings")
+    parser.add_argument("--resolution-aliases")
     parser.add_argument("--virtual-root", dest="virtual_roots", action="append", default=[])
     args=vars(parser.parse_args(argv))
     try:
         args['bindings']=_json_file(Path(args['bindings']))
         if args['attachment_bindings'] is not None:
             args['attachment_bindings']=_json_file(Path(args['attachment_bindings']))
+        if args['resolution_aliases'] is not None:
+            args['resolution_aliases']=_json_file(Path(args['resolution_aliases']))
         rules=[]
         for rule in args.pop('virtual_roots'):
             prefix, separator, relative = rule.partition('=')

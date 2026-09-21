@@ -153,3 +153,33 @@ def test_normalize_virtual_roots_rejects_invalid(roots):
 def test_normalize_virtual_roots_accepts_and_normalizes():
     assert normalize_virtual_roots(None)==[]
     assert normalize_virtual_roots([('/knowledge','external/knowledge')])==[('/knowledge','external/knowledge')]
+
+
+def test_resolution_alias_supplies_layout_context(tmp_path):
+    root=tmp_path.resolve()
+    (root/'blobs').mkdir()
+    (root/'resources/external/knowledge/assets').mkdir(parents=True)
+    body=b'![image](../assets/image.png)\n'
+    digest=hashlib.sha256(body).hexdigest()
+    (root/'blobs'/digest).write_bytes(body)
+    (root/'resources/external/knowledge/assets/image.png').write_bytes(b'png')
+    with pytest.raises(ValueError,match='Missing document dependency'):
+        collect_document_dependencies(root,{'blobs/'+digest:'text/markdown'})
+    graph=collect_document_dependencies(root,{'blobs/'+digest:'text/markdown'},
+        resolution_aliases={'blobs/'+digest:'resources/external/knowledge/imported/doc.md'})
+    assert set(graph['files'])=={'blobs/'+digest,'resources/external/knowledge/assets/image.png'}
+    assert graph['edges']==[{'source':'blobs/'+digest,'target':'resources/external/knowledge/assets/image.png'}]
+
+
+@pytest.mark.parametrize('aliases',[
+    {'unknown.md':'a/b.md'},      # key must be a primary document
+    {'body.md':'../escape'},
+    {'body.md':'/absolute'},
+    {'body.md':'a\\b'},
+    {'body.md':''},
+    {'body.md':None},
+])
+def test_resolution_alias_validation_rejects(tmp_path,aliases):
+    root=tmp_path.resolve();(root/'body.md').write_text('# x\n')
+    with pytest.raises(ValueError):
+        collect_document_dependencies(root,{'body.md':'text/markdown'},resolution_aliases=aliases)

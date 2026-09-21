@@ -108,6 +108,13 @@ that is `resources/<payload-relative>`. Undeclared absolute references refuse,
 and a decoded target falls back to its percent-encoded on-disk name when only
 that exists.
 
+`--resolution-aliases /absolute/private/resolution-aliases.json` maps a
+content-addressed body binding (e.g. `blobs/<digest>`) to the relative path
+whose directory the body's relative references were written against —
+typically `resources/<payload-relative>` from the forward migration. Without
+an alias, a body at `blobs/<digest>` resolves `../...` references against the
+blob directory and refuses on escape.
+
 All known current references require bindings; missing, extra, escaping or linked
 paths reject. Files bind SHA-256 and size; directory bindings commit their entire
 bounded inventory, including empty directories. File mappings must agree with

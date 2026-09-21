@@ -191,15 +191,34 @@ def _resolve(root: Path, source: str, reference: str, virtual_roots=()) -> tuple
     return relative, None
 
 
-def collect_document_dependencies(root: Path, primary: Mapping[str, str], *, virtual_roots=()) -> dict:
+def collect_document_dependencies(root: Path, primary: Mapping[str, str], *, virtual_roots=(), resolution_aliases=None) -> dict:
     """Collect hashes and local edges reachable from the primary documents.
 
     Every read is performed through :mod:`wiki_archive`, so symlinks, hardlinks,
     changed files, and size budgets are checked at the descriptor level.
     Absolute references in a declared virtual namespace rebind onto the
     inspected tree; any other absolute reference is refused.
+    resolution_aliases maps a primary relative path to another relative path
+    whose dirname supplies the resolution context for that document's
+    relative references (a content-addressed body keeps the layout position it
+    had when its references were written); edges still record the real path.
     """
     virtual_roots = normalize_virtual_roots(virtual_roots)
+    aliases: dict[str, str] = {}
+    if resolution_aliases is not None:
+        if not isinstance(resolution_aliases, Mapping):
+            raise ValueError("Resolution aliases must be a mapping")
+        for key, alias in resolution_aliases.items():
+            if key not in primary:
+                raise ValueError("Resolution alias targets an unknown document")
+            for value in (key, alias):
+                if not isinstance(value, str) or "\\" in value or not value:
+                    raise ValueError("Invalid resolution alias")
+                try:
+                    files._relative(value)
+                except ValueError as exc:
+                    raise ValueError("Invalid resolution alias") from exc
+            aliases[key] = alias
     root = files._path(Path(root))
     files._check(root.lstat(), directory=True)
     if not isinstance(primary, Mapping):
@@ -246,7 +265,7 @@ def collect_document_dependencies(root: Path, primary: Mapping[str, str], *, vir
         except UnicodeDecodeError as exc:
             raise ValueError("Document body is not valid UTF-8") from exc
         for reference in _references(path, text, mime_type):
-            target, external_hash = _resolve(root, relative, reference, virtual_roots)
+            target, external_hash = _resolve(root, aliases.get(relative, relative), reference, virtual_roots)
             if external_hash:
                 external.add(external_hash)
             elif target is not None:
