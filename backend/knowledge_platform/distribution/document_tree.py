@@ -5,7 +5,7 @@ from .document_dependencies import collect_document_dependencies
 from .document_attachment_metadata import collect_attachment_references, _validate_claimed_facts, _replace_metadata
 
 
-def collect_tree(root, rows, body_bindings, original_bindings, attachment_bindings):
+def collect_tree(root, rows, body_bindings, original_bindings, attachment_bindings, virtual_roots=()):
     """Read actual snapshot bytes; metadata declarations alone do not verify files."""
     root=files._path(root)
     references=collect_attachment_references([{'metadata_json':row.get('doc_metadata') or {}} for row in rows])
@@ -36,7 +36,7 @@ def collect_tree(root, rows, body_bindings, original_bindings, attachment_bindin
             verified[ref]={'kind':kind,'output_path':str(root/relative)}
             directories.add(relative);directories.update(str(Path(relative)/name) for name in inventory['directories'])
             for name in inventory['files']:primary.setdefault(str(Path(relative)/name),None)
-    graph=collect_document_dependencies(root,primary)
+    graph=collect_document_dependencies(root,primary,virtual_roots=virtual_roots)
     for fact in attachment_facts.values():
         relative=fact['relative_path']
         claimed={relative:{key:fact[key] for key in ('sha256','size_bytes')}} if fact['kind']=='file' else {str(Path(relative)/name):value for name,value in fact['inventory']['files'].items()}

@@ -44,7 +44,7 @@ def _copy(source, destination, fact):
 
 
 def prepare_document_reverse(source_snapshot, target_before, target_after, body_root, bindings,
-                             output, *, source_revision, attachment_bindings=None, _after_copy=None):
+                             output, *, source_revision, attachment_bindings=None, virtual_roots=None, _after_copy=None):
     paths = [sql._path(value) for value in (source_snapshot, target_before, target_after)]
     root, stage = [files._path(value) for value in (body_root, output)]
     files._check(root.stat(), directory=True)
@@ -52,6 +52,8 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
         raise ValueError('Reverse output overlaps input')
     if not isinstance(bindings, dict) or len(bindings) > 5000:
         raise ValueError('Invalid body bindings')
+    from .document_dependencies import normalize_virtual_roots
+    virtual_roots = normalize_virtual_roots(virtual_roots)
     input_digests = [sql._file_digest(path) for path in paths]
     # SQLite sees only private copies, even when an offline header uses WAL.
     with tempfile.TemporaryDirectory(prefix='document-reverse-inspect-') as temporary:
@@ -114,7 +116,7 @@ def prepare_document_reverse(source_snapshot, target_before, target_after, body_
             attachment_directories.update(str(Path(relative)/name) for name in inventory_facts['directories'])
             for name in inventory_facts['files']:
                 primary.setdefault(str(Path(relative)/name), None)
-    graph = collect_document_dependencies(root, primary)
+    graph = collect_document_dependencies(root, primary, virtual_roots=virtual_roots)
     for value in attachment_facts.values():
         relative = value['input_relative']
         claimed_files = {relative: {key:value[key] for key in ('sha256','size_bytes')}} if value['kind'] == 'file' else {str(Path(relative)/name): fact for name, fact in value['inventory']['files'].items()}
@@ -285,11 +287,18 @@ def main(argv=None):
     for name in ('source-snapshot','target-before','target-after','body-root','bindings','output','source-revision'):
         parser.add_argument('--'+name,required=True)
     parser.add_argument("--attachment-bindings")
+    parser.add_argument("--virtual-root", dest="virtual_roots", action="append", default=[])
     args=vars(parser.parse_args(argv))
     try:
         args['bindings']=_json_file(Path(args['bindings']))
         if args['attachment_bindings'] is not None:
             args['attachment_bindings']=_json_file(Path(args['attachment_bindings']))
+        rules=[]
+        for rule in args.pop('virtual_roots'):
+            prefix, separator, relative = rule.partition('=')
+            if not separator: raise ValueError('Virtual roots must be VIRTUAL_PREFIX=DST')
+            rules.append((prefix, relative))
+        args['virtual_roots']=rules
         result=prepare_document_reverse(**args)
     except Exception:
         print(json.dumps({'format':FORMAT,'status':'error','error_code':'document_reverse_rejected','activation_allowed':False}));return 1

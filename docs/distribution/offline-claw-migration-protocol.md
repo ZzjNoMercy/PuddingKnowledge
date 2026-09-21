@@ -104,9 +104,13 @@ It consumes an immutable approved snapshot, and all existing partial/inactive
 flags remain in force. The normalized legacy Catalog is intermediate evidence,
 not the target Knowledge Catalog and never a Harness database.
 
-Document requests may additionally supply `original_bindings` and
-`attachment_bindings` objects. They are passed only to the document converter;
-Wiki archiving retains its separate input contract. Document migration v3
+Document requests may additionally supply `original_bindings`,
+`attachment_bindings` and `virtual_roots` objects. They are passed only to the
+document converter; Wiki archiving retains its separate input contract.
+`virtual_roots` is a bounded list of `virtual_prefix`/`relative_root` pairs
+that rebinds absolute in-body references in the product's virtual namespace
+onto snapshot-relative roots during dependency collection; undeclared absolute
+references refuse. Document migration v3
 commits a source-relative `resources` tree, and the outer receipt includes those
 file hashes. The full tree, including empty directories, is verified before
 receipt publication. Source-reference mapping and package/workspace versions are

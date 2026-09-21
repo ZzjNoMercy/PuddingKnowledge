@@ -138,6 +138,29 @@ def test_request_cannot_select_another_snapshot(tmp_path):
     assert not output.exists()
 
 
+@pytest.mark.parametrize('value', [
+    'not-a-list',
+    [{'virtual_prefix': '/knowledge'}],                                  # missing relative_root
+    [{'virtual_prefix': 'relative', 'relative_root': 'external'}],       # prefix must be absolute
+    [{'virtual_prefix': '/knowledge', 'relative_root': 3}],              # target must be a string
+    [{'virtual_prefix': '/knowledge', 'relative_root': 'external', 'extra': 1}],
+])
+def test_malformed_virtual_roots_reject(tmp_path, value):
+    request, output = fixture(tmp_path)
+    data = json.loads(request.read_text()); data['virtual_roots'] = value
+    request.write_text(json.dumps(data))
+    with pytest.raises(ValueError): migrate_from_claw(request, output, source_snapshot=tmp_path/'snapshot')
+
+
+def test_valid_virtual_roots_field_is_accepted(tmp_path):
+    request, output = fixture(tmp_path)
+    data = json.loads(request.read_text())
+    data['virtual_roots'] = [{'virtual_prefix': '/knowledge', 'relative_root': 'external/knowledge'}]
+    request.write_text(json.dumps(data))
+    result = migrate_from_claw(request, output, source_snapshot=tmp_path/'snapshot')
+    assert result['state'] == 'verified_inactive_partial'
+
+
 def test_raw_catalog_wal_is_materialized_from_private_copy(tmp_path):
     request, output = fixture(tmp_path)
     catalog = tmp_path / 'snapshot' / 'legacy.sqlite3'

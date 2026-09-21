@@ -113,9 +113,9 @@ def test_changed_attachment_content_uses_current_claim_and_preserves_source(tmp_
 def test_attachment_fact_and_graph_inspection_cannot_capture_different_bytes(tmp_path,monkeypatch):
     from knowledge_platform.distribution import document_dependencies
     args,bindings=attachment_fixture(tmp_path);original=document_dependencies.collect_document_dependencies
-    def mutate(root,primary):
+    def mutate(root,primary,**kwargs):
         (root/'original/source.pdf').write_bytes(b'changed between inspections')
-        return original(root,primary)
+        return original(root,primary,**kwargs)
     monkeypatch.setattr(document_dependencies,'collect_document_dependencies',mutate)
     with pytest.raises(ValueError,match='changed during dependency discovery'):run(args,bindings)
     assert not args[-1].exists()

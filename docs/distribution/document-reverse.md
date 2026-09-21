@@ -101,6 +101,13 @@ JSON maps each exact old absolute reference to one canonical relative path below
 }
 ```
 
+Repeatable `--virtual-root VIRTUAL_PREFIX=DST` rules rebind absolute in-body
+references in the product's virtual namespace (e.g. `/knowledge/assets/...`)
+onto canonical relative roots below `--body-root` — after a forward migration
+that is `resources/<payload-relative>`. Undeclared absolute references refuse,
+and a decoded target falls back to its percent-encoded on-disk name when only
+that exists.
+
 All known current references require bindings; missing, extra, escaping or linked
 paths reject. Files bind SHA-256 and size; directory bindings commit their entire
 bounded inventory, including empty directories. File mappings must agree with

@@ -50,6 +50,22 @@ relative POSIX path: no absolute paths, no `..`, `.` or empty segments, no
 backslashes; containment inside the files root is therefore lexical, and the
 chain's symlink-free readers enforce it physically.
 
+## Virtual reference roots
+
+Document bodies can carry absolute references in the product's virtual
+namespace (e.g. `/knowledge/assets/...`), which `--map` cannot reach because
+those paths never existed on the legacy filesystem. Repeatable
+`--virtual-root VIRTUAL_PREFIX=DST` rules rebind them: a body reference equal
+to `VIRTUAL_PREFIX` or under `VIRTUAL_PREFIX + '/'` resolves to `DST` (a
+canonical relative POSIX path) plus the remaining suffix inside the files
+root. When the decoded target is absent but the same path exists with each
+segment percent-encoded (legacy connector assets are stored under encoded
+names), the encoded file is bound. Any absolute body reference outside a
+declared prefix refuses. The declared rules are carried in the request as
+`virtual_roots` entries (`virtual_prefix`/`relative_root` pairs) and echoed in
+the receipt, so the chain re-runs dependency collection with exactly the
+approved rebinding.
+
 ## Pre-verification
 
 The Catalog copy is opened with a SQLite `mode=ro&immutable=1` URI and is never

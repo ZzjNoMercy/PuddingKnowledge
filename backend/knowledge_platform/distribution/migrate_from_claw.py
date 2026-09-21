@@ -88,6 +88,16 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         if optional in request:
             if not isinstance(request[optional],dict):raise ValueError('Migration bindings must be objects')
             required.add(optional)
+    if 'virtual_roots' in request:
+        virtual_roots = request['virtual_roots']
+        if not isinstance(virtual_roots, list) or len(virtual_roots) > 16:
+            raise ValueError('Invalid virtual reference roots')
+        for item in virtual_roots:
+            if (not isinstance(item, dict) or set(item) != {'virtual_prefix', 'relative_root'}
+                    or not isinstance(item['virtual_prefix'], str) or not item['virtual_prefix'].startswith('/')
+                    or not isinstance(item['relative_root'], str)):
+                raise ValueError('Invalid virtual reference root')
+        required.add('virtual_roots')
     if set(request) != required or request['format'] not in (REQUEST_FORMAT, REQUEST_FORMAT_V2):
         raise ValueError('Unsupported migration request')
     for key in ('installation_id','source_revision','source_schema_revision'):
@@ -158,18 +168,19 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
         # A raw Home snapshot may carry committed pages in WAL (or require a
         # rollback journal). Normalize only a private copy before delegating to
         # document migration; the approved snapshot is never opened as SQLite.
+        virtual = [(item['virtual_prefix'], item['relative_root']) for item in request['virtual_roots']] if 'virtual_roots' in request else None
         sidecars = tuple(_path(str(catalog) + suffix) for suffix in ('-wal','-shm','-journal') if _path(str(catalog) + suffix).exists())
         if sidecars:
             normalization.mkdir(mode=0o700, exist_ok=True)
             if normalization.stat().st_mode & 0o077: raise ValueError('Catalog normalization output is not private')
             normalized_catalog, normalization_report = normalize_catalog(catalog, normalization)
             prepare_document_migration(normalized_catalog, files_root, request['bindings'], candidate,
-                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'))
+                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'), virtual_roots=virtual)
         else:
             if normalization.exists(): raise ValueError('Source Catalog sidecar bundle changed')
             normalization_report = None
             prepare_document_migration(catalog, files_root, request['bindings'], candidate,
-                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'))
+                installation_id=request['installation_id'], source_revision=request['source_revision'], original_bindings=request.get('original_bindings'), attachment_bindings=request.get('attachment_bindings'), virtual_roots=virtual)
         if wiki_root is not None:
             prepare_wiki_archive(wiki_root, output/'wiki', installation_id=request['installation_id'], source_revision=request['source_revision'])
         if _after_candidate: _after_candidate()

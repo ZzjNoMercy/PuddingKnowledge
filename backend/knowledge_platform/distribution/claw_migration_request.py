@@ -10,8 +10,9 @@ Request contract (mirrors distribution/migrate_from_claw.py validation):
 
 - keys are exactly {format, installation_id, source_revision,
   source_schema_revision, source_catalog, source_files_root, source_wiki_root,
-  bindings, original_bindings, attachment_bindings} and format is
-  puddingknowledge-migrate-from-claw-request/v2 (v2 requires source_wiki_root);
+  bindings, original_bindings, attachment_bindings, virtual_roots} and format
+  is puddingknowledge-migrate-from-claw-request/v2 (v2 requires
+  source_wiki_root);
 - installation_id, source_revision and source_schema_revision fullmatch the
   identity TOKEN ^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$.  Knowledge consumers only
   bind source_schema_revision into the request digest and no derivation is
@@ -42,6 +43,13 @@ reference refuses, and two distinct source paths mapping to one relative
 refuse (collision).  Mapped relatives must stay canonical and inside the
 files root.
 
+Bodies of legacy documents also carry absolute references in the product's
+virtual namespace (e.g. /knowledge/assets/...).  Repeatable --virtual-root
+VIRTUAL_PREFIX=DST rules rebind such references onto canonical root-relative
+directories in the snapshot payload (the same tree the forward chain later
+inspects), so dependency collection can verify them instead of refusing the
+absolute form.  Undeclared absolute references still refuse.
+
 The Catalog copy is opened with a SQLite mode=ro&immutable=1 URI and is never
 mutated; WAL/SHM/journal sidecars refuse (the copy must be fully checkpointed)
 and knowledge_documents must be non-empty.  Every bound body, original and
@@ -67,6 +75,7 @@ from urllib.parse import quote
 
 from .catalog_snapshot import _path, _identity
 from .document_attachment_metadata import collect_attachment_references
+from .document_dependencies import normalize_virtual_roots
 from .document_migration import MAX_TOTAL, TOKEN, _digest, _encode as _canonical, _read
 from .document_tree import collect_tree
 from .migrate_from_claw import REQUEST_FORMAT_V2, _MAX_REQUEST, _private_read, _write
@@ -107,6 +116,12 @@ def _mapping(rule):
     return _absolute_source(source), _relative(relative)
 
 
+def _virtual_mapping(rule):
+    prefix, separator, relative = rule.partition('=')
+    if not separator: raise ValueError('Virtual roots must be VIRTUAL_PREFIX=DST')
+    return prefix, relative
+
+
 def _map_source(path, rules):
     best = None
     for source, relative in rules:
@@ -140,7 +155,7 @@ def _documents(catalog):
 
 def generate_migration_request(snapshot_root, catalog, files_root, wiki_root, *,
                                installation_id, source_revision, source_schema_revision,
-                               mappings, output, receipt):
+                               mappings, output, receipt, virtual_roots=()):
     for value in (snapshot_root, catalog, files_root, wiki_root, output, receipt):
         if not Path(value).expanduser().is_absolute(): raise ValueError('Protocol paths must be absolute')
     snapshot, catalog, files, wiki = (_path(value) for value in (snapshot_root, catalog, files_root, wiki_root))
@@ -159,6 +174,7 @@ def generate_migration_request(snapshot_root, catalog, files_root, wiki_root, *,
     rules = [_mapping(rule) for rule in mappings]
     if len({source for source, _relative_root in rules}) != len(rules):
         raise ValueError('Duplicate mapping source prefix')
+    virtual = normalize_virtual_roots([_virtual_mapping(rule) for rule in virtual_roots])
 
     rows = _documents(catalog)
     catalog_digest = 'sha256:' + _file_digest(catalog)
@@ -207,14 +223,15 @@ def generate_migration_request(snapshot_root, catalog, files_root, wiki_root, *,
         original_bindings[doc_id] = relative
     references = collect_attachment_references([{'metadata_json': row.get('doc_metadata') or {}} for row in rows])
     attachment_bindings = {reference: bind(reference) for reference in references}
-    tree = collect_tree(files, rows, bindings, original_bindings, attachment_bindings)
+    tree = collect_tree(files, rows, bindings, original_bindings, attachment_bindings, virtual_roots=virtual)
     payload = sum(blobs.values()) + sum(fact['size_bytes'] for fact in tree['files'].values())
     if payload > MAX_TOTAL: raise ValueError('Document package exceeds byte budget')
 
     request = {'format': REQUEST_FORMAT_V2, 'installation_id': installation_id,
                'source_revision': source_revision, 'source_schema_revision': source_schema_revision,
                'source_catalog': str(catalog), 'source_files_root': str(files), 'source_wiki_root': str(wiki),
-               'bindings': bindings, 'original_bindings': original_bindings, 'attachment_bindings': attachment_bindings}
+               'bindings': bindings, 'original_bindings': original_bindings, 'attachment_bindings': attachment_bindings,
+               'virtual_roots': [{'virtual_prefix': prefix, 'relative_root': relative} for prefix, relative in virtual]}
     request_data = _encode(request)
     result = {'format': FORMAT, 'state': STATE, 'installation_id': installation_id,
               'source_revision': source_revision, 'source_schema_revision': source_schema_revision,
@@ -222,6 +239,7 @@ def generate_migration_request(snapshot_root, catalog, files_root, wiki_root, *,
               'counts': {'documents': len(bindings), 'originals': len(original_bindings),
                          'attachments': len(attachment_bindings), 'bytes': payload},
               'mappings': [{'source_prefix': source, 'relative_root': relative} for source, relative in sorted(rules)],
+              'virtual_roots': request['virtual_roots'],
               'unmapped_references': 0, **FLAGS}
     receipt_data = _encode(result)
     for target, data in ((output, request_data), (receipt, receipt_data)):
@@ -242,6 +260,7 @@ def main():
     parser.add_argument('--source-revision', required=True)
     parser.add_argument('--source-schema-revision', required=True)
     parser.add_argument('--map', dest='mappings', action='append', required=True)
+    parser.add_argument('--virtual-root', dest='virtual_roots', action='append', default=[])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
@@ -249,7 +268,7 @@ def main():
         result = generate_migration_request(args.snapshot_root, args.catalog, args.files_root, args.wiki_root,
             installation_id=args.installation_id, source_revision=args.source_revision,
             source_schema_revision=args.source_schema_revision, mappings=args.mappings,
-            output=args.output, receipt=args.receipt)
+            virtual_roots=args.virtual_roots, output=args.output, receipt=args.receipt)
     except Exception:
         print(json.dumps({'format': FORMAT, 'status': 'error', 'error_code': 'claw_migration_request_rejected', **FLAGS}))
         return 1

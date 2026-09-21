@@ -157,7 +157,7 @@ def _publish(output, plan, assets, bodies, catalog, validate_catalog, verify_sou
 
 
 def prepare_document_migration(source_catalog, source_files_root, bindings, output, *,
-                               installation_id='document-migration', source_revision='legacy-1', original_bindings=None, attachment_bindings=None, _after_publish=None):
+                               installation_id='document-migration', source_revision='legacy-1', original_bindings=None, attachment_bindings=None, virtual_roots=None, _after_publish=None):
     source = _database_path(source_catalog)
     source_identity = _identity(source)
     root, output = _path(source_files_root), _path(output)
@@ -170,6 +170,8 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
     original_bindings = {} if original_bindings is None else original_bindings
     if not isinstance(original_bindings, dict) or len(original_bindings) > 5000:
         raise ValueError('Invalid original document bindings')
+    from .document_dependencies import normalize_virtual_roots
+    virtual_roots = normalize_virtual_roots(virtual_roots)
     for key, relative in [*bindings.items(), *original_bindings.items()]:
         if not isinstance(key, str) or not TOKEN.fullmatch(key) or not isinstance(relative, str) or not relative:
             raise ValueError('Invalid document binding')
@@ -224,7 +226,7 @@ def prepare_document_migration(source_catalog, source_files_root, bindings, outp
                         bodies[original_relative] = original; original_assets[asset_id] = original_relative
                         facts[doc_id]['original'] = {'relative_path':original_bindings[doc_id], 'digest':original_digest}
                 from .document_tree import collect_tree, verify_tree_source
-                tree = collect_tree(root, decoded_rows, bindings, original_bindings, attachment_bindings)
+                tree = collect_tree(root, decoded_rows, bindings, original_bindings, attachment_bindings, virtual_roots=virtual_roots)
                 for name, fact in tree['files'].items():
                     data = _read(root/name)
                     if _digest(data) != 'sha256:'+fact['sha256'] or len(data) != fact['size_bytes']: raise ValueError('Dependency changed during migration')

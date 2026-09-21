@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 import hashlib
+import os
 import posixpath
 from pathlib import Path, PurePosixPath
 import re
 from typing import Mapping
-from urllib.parse import urlsplit, unquote
+from urllib.parse import quote, urlsplit, unquote
 
 from . import wiki_archive as files
 
@@ -16,6 +17,35 @@ _PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _DOCUMENT_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 _EXTERNAL_SCHEMES = {"http", "https", "mailto", "data"}
 _HTML_URL_ATTRIBUTES = {"src", "href", "data", "poster"}
+
+
+def normalize_virtual_roots(virtual_roots):
+    """Validate virtual reference roots as (prefix, relative_root) pairs.
+
+    Legacy bodies carry absolute references in the product's virtual namespace
+    (e.g. /knowledge/assets/...). Each declared prefix is absolute POSIX and
+    rebinds onto a canonical root-relative directory in the inspected tree.
+    """
+    normalized = []
+    for prefix, target in virtual_roots or ():
+        if not isinstance(prefix, str) or not prefix.startswith("/") or "\\" in prefix:
+            raise ValueError("Invalid virtual reference prefix")
+        canonical = posixpath.normpath(prefix)
+        if canonical != prefix or prefix != "/" and prefix.endswith("/") or "//" in prefix:
+            raise ValueError("Invalid virtual reference prefix")
+        if canonical == "/" or any(part in {".", ".."} for part in prefix.split("/")[1:]):
+            raise ValueError("Invalid virtual reference prefix")
+        if not isinstance(target, str) or "\\" in target:
+            raise ValueError("Invalid virtual reference target")
+        target_path = PurePosixPath(target)
+        if target_path.is_absolute() or target_path.as_posix() != target or any(
+                part in {"", ".", ".."} for part in target_path.parts):
+            raise ValueError("Invalid virtual reference target")
+        normalized.append((prefix, target))
+    prefixes = [prefix for prefix, _ in normalized]
+    if len(set(prefixes)) != len(prefixes):
+        raise ValueError("Duplicate virtual reference prefix")
+    return normalized
 
 
 class _ReferenceParser(HTMLParser):
@@ -94,7 +124,31 @@ def _external(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _resolve(root: Path, source: str, reference: str) -> tuple[str | None, str | None]:
+def _exists_no_follow(root: Path, relative: str) -> bool:
+    try:
+        os.lstat(root / Path(*relative.split("/")))
+    except OSError:
+        return False
+    return True
+
+
+def _virtual_target(root: Path, candidate: str) -> tuple[str, None]:
+    normalized = posixpath.normpath(candidate)
+    if normalized in {"", "."} or normalized == ".." or normalized.startswith("../"):
+        raise ValueError("Document reference escapes root")
+    relative = PurePosixPath(normalized).as_posix()
+    if any(part in {"", ".", ".."} for part in relative.split("/")):
+        raise ValueError("Invalid document reference")
+    if not _exists_no_follow(root, relative):
+        # Legacy connector assets are stored with percent-encoded file names
+        # while bodies reference the decoded names; bind the encoded file.
+        encoded = "/".join(quote(part, safe="") for part in relative.split("/"))
+        if encoded != relative and _exists_no_follow(root, encoded):
+            relative = encoded
+    return relative, None
+
+
+def _resolve(root: Path, source: str, reference: str, virtual_roots=()) -> tuple[str | None, str | None]:
     if not isinstance(reference, str) or any(ord(character) < 32 or ord(character) == 127 for character in reference) or "\\" in reference:
         raise ValueError("Invalid document reference")
     if _PERCENT.search(reference):
@@ -115,6 +169,11 @@ def _resolve(root: Path, source: str, reference: str) -> tuple[str | None, str |
     if not raw_path or raw_path == ".":
         return None, None
     if raw_path.startswith("/"):
+        for prefix, target in virtual_roots:
+            if raw_path == prefix or raw_path.startswith(prefix + "/"):
+                remainder = raw_path[len(prefix):].lstrip("/")
+                candidate = target if not remainder else target + "/" + remainder
+                return _virtual_target(root, candidate)
         raise ValueError("Absolute document reference")
     normalized = posixpath.normpath(posixpath.join(posixpath.dirname(source), raw_path))
     if normalized in {"", "."} or normalized == ".." or normalized.startswith("../"):
@@ -127,12 +186,15 @@ def _resolve(root: Path, source: str, reference: str) -> tuple[str | None, str |
     return relative, None
 
 
-def collect_document_dependencies(root: Path, primary: Mapping[str, str]) -> dict:
+def collect_document_dependencies(root: Path, primary: Mapping[str, str], *, virtual_roots=()) -> dict:
     """Collect hashes and local edges reachable from the primary documents.
 
     Every read is performed through :mod:`wiki_archive`, so symlinks, hardlinks,
     changed files, and size budgets are checked at the descriptor level.
+    Absolute references in a declared virtual namespace rebind onto the
+    inspected tree; any other absolute reference is refused.
     """
+    virtual_roots = normalize_virtual_roots(virtual_roots)
     root = files._path(Path(root))
     files._check(root.lstat(), directory=True)
     if not isinstance(primary, Mapping):
@@ -179,7 +241,7 @@ def collect_document_dependencies(root: Path, primary: Mapping[str, str]) -> dic
         except UnicodeDecodeError as exc:
             raise ValueError("Document body is not valid UTF-8") from exc
         for reference in _references(path, text, mime_type):
-            target, external_hash = _resolve(root, relative, reference)
+            target, external_hash = _resolve(root, relative, reference, virtual_roots)
             if external_hash:
                 external.add(external_hash)
             elif target is not None:

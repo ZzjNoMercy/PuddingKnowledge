@@ -103,6 +103,23 @@ def test_body_digest_mismatch_rejects_before_output_creation(tmp_path):
     assert not args[-1].exists()
 
 
+def test_virtual_root_rebinds_absolute_body_reference(tmp_path):
+    args=setup(tmp_path)
+    content=b'# Updated body\n\n![figure](/knowledge/assets/figure.png)\n'
+    (args[3]/'updated.md').write_bytes(content)
+    (args[3]/'resources/external/knowledge/assets').mkdir(parents=True)
+    (args[3]/'resources/external/knowledge/assets/figure.png').write_bytes(b'figure')
+    digest='sha256:'+hashlib.sha256(content).hexdigest()
+    with sqlite3.connect(args[2]) as db:
+        db.execute('UPDATE knowledge_assets SET content_digest=?,revision=?',(digest,digest))
+    with pytest.raises(ValueError,match='Absolute document reference'):
+        run(args)
+    receipt=run(args,virtual_roots=[('/knowledge','resources/external/knowledge')])
+    assert receipt['state']=='verified_inactive_documents'
+    assert (args[-1]/'bodies/resources/external/knowledge/assets/figure.png').read_bytes()==b'figure'
+    assert run(args,virtual_roots=[('/knowledge','resources/external/knowledge')])==dict(receipt,idempotent=True)
+
+
 def test_body_change_during_copy_rejects_completion(tmp_path):
     args=setup(tmp_path)
     def mutate(name):

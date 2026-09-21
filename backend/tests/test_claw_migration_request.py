@@ -123,7 +123,8 @@ def test_happy_path_generates_preverified_v2_request_and_chain_succeeds(tmp_path
     request = json.loads(request_bytes)
     assert set(request) == {'format', 'installation_id', 'source_revision', 'source_schema_revision',
                             'source_catalog', 'source_files_root', 'source_wiki_root',
-                            'bindings', 'original_bindings', 'attachment_bindings'}
+                            'bindings', 'original_bindings', 'attachment_bindings', 'virtual_roots'}
+    assert request['virtual_roots'] == []
     assert request['format'] == REQUEST_FORMAT_V2
     assert request['bindings'] == {'doc-1': 'external/knowledge/imported/readme.md',
                                    'doc-2': 'external/knowledge/imported/paper.md',
@@ -154,6 +155,51 @@ def test_happy_path_generates_preverified_v2_request_and_chain_succeeds(tmp_path
     for name, digest in receipt['artifacts'].items():
         assert 'sha256:' + hashlib.sha256((output / name).read_bytes()).hexdigest() == digest
     assert migrate_from_claw(request_path, output, source_snapshot=snapshot) == receipt
+
+
+VIRTUAL_BODY = b'# Note\n\n![figure](/knowledge/assets/figure.png)\n'
+
+
+def test_virtual_roots_rebind_absolute_body_references(tmp_path):
+    documents = _documents() + [
+        {'id': 'doc-4', 'source_path': LEGACY + '/imported/note.md',
+         'storage_path': LEGACY + '/imported/note.md',
+         'content_sha256': hashlib.sha256(VIRTUAL_BODY).hexdigest()},
+    ]
+    payload = dict(PAYLOAD, **{'external/knowledge/imported/note.md': VIRTUAL_BODY,
+                               'external/knowledge/assets/figure.png': b'figure'})
+    parts = _snapshot(tmp_path, documents=documents, payload=payload)
+    result = _generate(tmp_path, parts, virtual_roots=['/knowledge=external/knowledge'])
+    request = json.loads((tmp_path / 'request.json').read_bytes())
+    assert request['virtual_roots'] == [{'virtual_prefix': '/knowledge', 'relative_root': 'external/knowledge'}]
+    assert result['virtual_roots'] == request['virtual_roots']
+    output = tmp_path / 'delegate'
+    receipt = migrate_from_claw(tmp_path / 'request.json', output, source_snapshot=parts[0])
+    assert receipt['state'] == 'verified_inactive_partial'
+    assert 'candidate/resources/external/knowledge/assets/figure.png' in receipt['artifacts']
+
+
+def test_undeclared_absolute_body_reference_refuses(tmp_path):
+    documents = _documents() + [
+        {'id': 'doc-4', 'source_path': LEGACY + '/imported/note.md',
+         'storage_path': LEGACY + '/imported/note.md',
+         'content_sha256': hashlib.sha256(VIRTUAL_BODY).hexdigest()},
+    ]
+    payload = dict(PAYLOAD, **{'external/knowledge/imported/note.md': VIRTUAL_BODY,
+                               'external/knowledge/assets/figure.png': b'figure'})
+    parts = _snapshot(tmp_path, documents=documents, payload=payload)
+    with pytest.raises(ValueError, match='Absolute document reference'):
+        _generate(tmp_path, parts)
+    assert not (tmp_path / 'request.json').exists()
+
+
+@pytest.mark.parametrize('rule', ['/knowledge', '/knowledge=', 'knowledge=external/knowledge',
+                                  '/knowledge=/absolute', '/knowledge=../escape', '/=external'])
+def test_hostile_virtual_root_rule_refuses(tmp_path, rule):
+    parts = _snapshot(tmp_path)
+    with pytest.raises(ValueError):
+        _generate(tmp_path, parts, virtual_roots=[rule])
+    assert not (tmp_path / 'request.json').exists()
 
 
 def test_empty_wiki_root_still_completes_the_forward_chain(tmp_path):

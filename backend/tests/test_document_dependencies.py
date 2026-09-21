@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from knowledge_platform.distribution.document_dependencies import collect_document_dependencies
+from knowledge_platform.distribution.document_dependencies import collect_document_dependencies, normalize_virtual_roots
 
 
 def test_collects_markdown_images_percent_parent_and_cycle(tmp_path: Path) -> None:
@@ -71,3 +71,65 @@ def test_unsupported_html_dependency_semantics_reject(tmp_path,html):
 def test_invalid_utf8_url_escape_rejects(tmp_path):
     root=tmp_path.resolve();(root/'body.md').write_text('<img src="%FF.png">')
     with pytest.raises(ValueError):collect_document_dependencies(root,{'body.md':'text/markdown'})
+
+
+def test_virtual_root_rebinds_absolute_reference(tmp_path):
+    root=tmp_path.resolve()
+    (root/'external/knowledge/assets').mkdir(parents=True)
+    (root/'body.md').write_text('![image](/knowledge/assets/image-1.png)\n')
+    (root/'external/knowledge/assets/image-1.png').write_bytes(b'png')
+    with pytest.raises(ValueError):
+        collect_document_dependencies(root,{'body.md':'text/markdown'})
+    graph=collect_document_dependencies(root,{'body.md':'text/markdown'},virtual_roots=[('/knowledge','external/knowledge')])
+    assert set(graph['files'])=={'body.md','external/knowledge/assets/image-1.png'}
+    assert graph['edges']==[{'source':'body.md','target':'external/knowledge/assets/image-1.png'}]
+
+
+def test_virtual_root_rebinds_percent_encoded_disk_name(tmp_path):
+    root=tmp_path.resolve()
+    (root/'external/knowledge').mkdir(parents=True)
+    (root/'body.md').write_text('![image](/knowledge/Entity_源.png)\n')
+    (root/'external/knowledge/Entity_%E6%BA%90.png').write_bytes(b'png')
+    graph=collect_document_dependencies(root,{'body.md':'text/markdown'},virtual_roots=[('/knowledge','external/knowledge')])
+    assert set(graph['files'])=={'body.md','external/knowledge/Entity_%E6%BA%90.png'}
+
+
+def test_virtual_root_missing_target_rejects(tmp_path):
+    root=tmp_path.resolve()
+    (root/'body.md').write_text('![image](/knowledge/assets/missing.png)\n')
+    with pytest.raises(ValueError):
+        collect_document_dependencies(root,{'body.md':'text/markdown'},virtual_roots=[('/knowledge','external/knowledge')])
+
+
+def test_virtual_root_does_not_leak_outside_declared_prefix(tmp_path):
+    root=tmp_path.resolve()
+    (root/'body.md').write_text('![image](/other/assets/image.png)\n')
+    with pytest.raises(ValueError):
+        collect_document_dependencies(root,{'body.md':'text/markdown'},virtual_roots=[('/knowledge','external/knowledge')])
+
+
+def test_virtual_root_escape_rebind_rejects(tmp_path):
+    root=tmp_path.resolve()
+    (root/'body.md').write_text('![image](/knowledge/../../etc/passwd)\n')
+    with pytest.raises(ValueError):
+        collect_document_dependencies(root,{'body.md':'text/markdown'},virtual_roots=[('/knowledge','external/knowledge')])
+
+
+@pytest.mark.parametrize('roots',[
+    [('/','external')],                    # root prefix would swallow every absolute reference
+    [('knowledge','external')],            # prefix must be absolute
+    [('/knowledge/','external')],          # noncanonical trailing slash
+    [('/knowledge//x','external')],        # noncanonical double slash
+    [('/knowledge/../knowledge','external')],
+    [('/knowledge','')],                   # empty target
+    [('/knowledge','/external')],          # target must be relative
+    [('/knowledge','external/../knowledge')],
+    [('/knowledge','external'),('/knowledge','other')],  # duplicate prefix
+])
+def test_normalize_virtual_roots_rejects_invalid(roots):
+    with pytest.raises(ValueError):normalize_virtual_roots(roots)
+
+
+def test_normalize_virtual_roots_accepts_and_normalizes():
+    assert normalize_virtual_roots(None)==[]
+    assert normalize_virtual_roots([('/knowledge','external/knowledge')])==[('/knowledge','external/knowledge')]
