@@ -41,7 +41,7 @@ retry after interruption. Completed missing/tampered raw, normalized files or
 reports reject before any attempted regeneration. Atomic manifest replacement
 may leave private diagnostic temporary files that are never active state.
 
-The command inherits existing limits: 128 MiB per raw file, 2 GiB raw aggregate,
+The command inherits existing limits: 256 MiB per raw file, 2 GiB raw aggregate,
 50,000 raw entries; each SQLite family is bounded by the normalization component
 (256 MiB per member, 512 MiB bundle, five-second materialization). Full legacy
 schema conversion, reverse file-layout mapping, credentials, unified installation

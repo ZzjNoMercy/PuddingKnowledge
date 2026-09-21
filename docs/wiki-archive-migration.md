@@ -54,7 +54,7 @@ existing Harness verifier to admit the evidence without importing Knowledge
 code or claiming that Wiki compilation/query migration is complete.
 
 The aggregate receipt is bounded by the existing Harness contract: 1 MiB JSON,
-10,000 artifacts, 128 MiB per file and 2 GiB total. These limits match the
+10,000 artifacts, 256 MiB per file and 2 GiB total. These limits match the
 standalone archiver; exceeding them fails before publishing a receipt.
 Resume retains the original request commitment, rejects v2-to-v1 downgrade, and
 verifies completed artifacts before any domain operation. Source archives and

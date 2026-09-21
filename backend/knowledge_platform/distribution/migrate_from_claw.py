@@ -66,7 +66,7 @@ def _verify_artifacts(output, artifacts):
         if not path.is_relative_to(output): raise ValueError('Artifact escaped output')
         info = path.stat(); _identity(path)
         total += info.st_size
-        if info.st_mode & 0o077 or info.st_size > 128*1024*1024 or total > 2*1024**3:
+        if info.st_mode & 0o077 or info.st_size > 256*1024*1024 or total > 2*1024**3:
             raise ValueError('Artifacts exceed protocol budget')
         if not isinstance(expected, str) or 'sha256:'+_file_digest(path) != expected:
             raise ValueError('Completed artifact changed')
@@ -187,7 +187,7 @@ def migrate_from_claw(request_path, output, *, source_snapshot, _after_candidate
             path = _path(candidate/relative)
             _identity(path)
             info = path.stat(); total += info.st_size
-            if info.st_mode & 0o077 or info.st_size > 128*1024*1024 or total > 2*1024**3:
+            if info.st_mode & 0o077 or info.st_size > 256*1024*1024 or total > 2*1024**3:
                 raise ValueError('Candidate exceeds artifact budget')
             actual = 'sha256:'+_file_digest(path)
             if actual != expected: raise ValueError('Candidate artifact changed')

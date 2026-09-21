@@ -87,7 +87,7 @@ unchanged; the candidate is never activated and no writer is switched.
 `activation_allowed`, `rollback_completed`, `credential_continuity_verified`,
 `indexes_rebuilt` and `installation_path_rebound` stay false; relocating or
 activating the candidate requires a separate audited step. Budgets mirror the
-archive contract (50k files, 128 MiB per file, 2 GiB total, 32 MiB metadata, 256
+archive contract (50k files, 256 MiB per file, 2 GiB total, 32 MiB metadata, 256
 MiB Catalog) plus 500 compilations, 200 authoring commits and 32/256 MiB
 per-commit/total committed payloads.
 

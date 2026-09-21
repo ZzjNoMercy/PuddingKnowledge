@@ -56,7 +56,7 @@ The Catalog copy is opened with a SQLite `mode=ro&immutable=1` URI and is never
 mutated; WAL/SHM/journal sidecars refuse because the copy must be fully
 checkpointed, and `knowledge_documents` must be non-empty. Before anything is
 published the generator streams every bound body, original and attachment
-through the same bounded readers the chain uses (128 MiB per file, 2 GiB
+through the same bounded readers the chain uses (256 MiB per file, 2 GiB
 totals, 5000 bindings) and compares the committed digests:
 `representation['body_sha256']` for converted-PDF rows, `content_sha256`
 otherwise, and `'sha256:'+representation['original_sha256']` for originals,

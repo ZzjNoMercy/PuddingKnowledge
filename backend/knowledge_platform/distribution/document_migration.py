@@ -17,7 +17,7 @@ from knowledge_platform.distribution.catalog_snapshot import _path, _identity
 
 FORMAT = 'puddingknowledge-document-migration/v3'
 TOKEN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$')
-MAX_FILE = 128 * 1024 * 1024
+MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 2 * 1024**3
 
 

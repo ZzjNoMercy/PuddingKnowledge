@@ -13,7 +13,7 @@ The private bindings JSON maps each legacy document ID to one relative file path
 inside the explicit offline files root. Every document must have exactly one
 binding. Paths from the legacy Catalog are never opened or inferred. The binding
 must match the document's recorded SHA-256; absent or mismatched digests reject.
-Symbolic/hard-linked blob files and escaping paths reject. Budgets are 128 MiB per
+Symbolic/hard-linked blob files and escaping paths reject. Budgets are 256 MiB per
 body, 2 GiB total, 5000 bindings and 256 MiB source Catalog. Source SQLite WAL,
 SHM and journal sidecars reject: use a verified offline snapshot first.
 
