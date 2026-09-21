@@ -166,6 +166,11 @@ def _resolve(root: Path, source: str, reference: str, virtual_roots=()) -> tuple
         raise ValueError('Invalid document reference encoding') from exc
     if any(ord(character) < 32 or ord(character) == 127 for character in raw_path) or '\\' in raw_path:
         raise ValueError('Invalid document reference')
+    decoded = urlsplit(raw_path)
+    if decoded.scheme and decoded.scheme.lower() in _EXTERNAL_SCHEMES:
+        # A percent-encoded URL decodes to a scheme the pre-decode parse
+        # cannot see; classify it external without fetching.
+        return None, _external(reference)
     if not raw_path or raw_path == ".":
         return None, None
     if raw_path.startswith("/"):

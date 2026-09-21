@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -71,6 +72,25 @@ def test_unsupported_html_dependency_semantics_reject(tmp_path,html):
 def test_invalid_utf8_url_escape_rejects(tmp_path):
     root=tmp_path.resolve();(root/'body.md').write_text('<img src="%FF.png">')
     with pytest.raises(ValueError):collect_document_dependencies(root,{'body.md':'text/markdown'})
+
+
+def test_percent_encoded_external_url_is_external_not_local(tmp_path):
+    root=tmp_path.resolve()
+    reference='https%3A/my.feishu.cn/wiki/Rj4IwwVSDi98OnkGQsKcz77nnYc%23share-XhVLdNLVmo7Wyvxruhec5fHen3b'
+    (root/'body.md').write_text('[wiki]('+reference+')\n')
+    graph=collect_document_dependencies(root,{'body.md':'text/markdown'})
+    assert set(graph['files'])=={'body.md'} and graph['edges']==[]
+    assert graph['external_references']==['sha256:'+hashlib.sha256(reference.encode()).hexdigest()]
+
+
+def test_percent_encoded_non_external_scheme_stays_local(tmp_path):
+    root=tmp_path.resolve()
+    (root/'body.md').write_text('[x](meet%3Anotes.md)\n')
+    with pytest.raises(ValueError,match='Missing document dependency'):
+        collect_document_dependencies(root,{'body.md':'text/markdown'})
+    (root/'meet:notes.md').write_bytes(b'notes')
+    graph=collect_document_dependencies(root,{'body.md':'text/markdown'})
+    assert set(graph['files'])=={'body.md','meet:notes.md'}
 
 
 def test_virtual_root_rebinds_absolute_reference(tmp_path):
