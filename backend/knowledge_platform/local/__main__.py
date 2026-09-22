@@ -26,6 +26,20 @@ from knowledge_platform.local.workspace import open_persistent_workspace
 
 
 class LocalServer(uvicorn.Server):
+    def __init__(self, config, *, ready_path: Path, ready_payload: dict[str, object]):
+        super().__init__(config)
+        self._ready_path = ready_path
+        self._ready_payload = ready_payload
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        # A ready receipt is an assertion about a reachable listener, not just
+        # completed workspace preparation.  Uvicorn sets ``started`` only
+        # after every supplied socket has been registered with the event loop.
+        if self.started:
+            with self._ready_path.open("x", encoding="utf-8") as stream:
+                json.dump(self._ready_payload, stream)
+
     @contextmanager
     def capture_signals(self):
         # The CLI owns lifecycle cleanup. Do not re-raise SIGTERM before the
@@ -309,20 +323,28 @@ def main() -> int:
                 response = await call_next(request)
                 response.headers["X-PuddingKnowledge-Instance"] = instance_id
                 return response
-        with ready.open("x", encoding="utf-8") as stream:
-            json.dump({"status": "ready", "pages": materialized["pages"],
-                       "activation_allowed": False, "migrated_documents": len(materialized.get("document_bindings", {})), "database_configured": bool(database_config),
-                       "structured_configured": bool(structured_config),
-                       "files_configured": files is not None,
-                       "packages_configured": packages is not None, "index_configured": index_config is not None,
-                       "wiki_configured": bool(wiki_config), "persistent": owned is not None}, stream)
+        ready_payload = {
+            "status": "ready", "pages": materialized["pages"],
+            "activation_allowed": False,
+            "migrated_documents": len(materialized.get("document_bindings", {})),
+            "database_configured": bool(database_config),
+            "structured_configured": bool(structured_config),
+            "files_configured": files is not None,
+            "packages_configured": packages is not None,
+            "index_configured": index_config is not None,
+            "wiki_configured": bool(wiki_config), "persistent": owned is not None,
+        }
         queue_worker = None
         if args.wiki_authoring_worker:
             from knowledge_platform.local.wiki_authoring_queue import WikiQueueWorker
             queue_worker = WikiQueueWorker(wiki_services["wiki_authoring"].queue_service, principal, workspace_lock_fd=persistent.lock_fd, authority_lock_fd=persistent.authority_fd)
         try:
             if queue_worker is not None:queue_worker.start()
-            LocalServer(uvicorn.Config(app, log_level="error", lifespan="off")).run(sockets=[listener])
+            LocalServer(
+                uvicorn.Config(app, log_level="error", lifespan="off"),
+                ready_path=ready,
+                ready_payload=ready_payload,
+            ).run(sockets=[listener])
         finally:
             if queue_worker is not None:
                 queue_worker.close()

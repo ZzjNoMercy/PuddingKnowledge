@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -12,10 +13,11 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pytest
+import uvicorn
 from sqlalchemy import create_engine, text
 
 from knowledge_platform.catalog.migrations import migrate_to_latest
-from knowledge_platform.local.__main__ import _output_path
+from knowledge_platform.local.__main__ import LocalServer, _output_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -93,6 +95,29 @@ def test_output_refuses_existing_and_symlink(tmp_path):
     link.symlink_to(existing, target_is_directory=True)
     with pytest.raises(ValueError):
         _output_path(link / "new")
+
+
+def test_ready_receipt_is_published_after_listener_startup(tmp_path, monkeypatch):
+    ready = tmp_path / "ready.json"
+    observed = []
+
+    async def start_listener(server, sockets=None):
+        observed.append(ready.exists())
+        server.started = True
+
+    monkeypatch.setattr(uvicorn.Server, "startup", start_listener)
+    server = LocalServer(
+        uvicorn.Config("unused:app"),
+        ready_path=ready,
+        ready_payload={"status": "ready", "activation_allowed": False},
+    )
+    asyncio.run(server.startup())
+
+    assert observed == [False]
+    assert json.loads(ready.read_text()) == {
+        "status": "ready",
+        "activation_allowed": False,
+    }
 
 
 def test_real_local_runtime_and_failure_boundaries(tmp_path):
