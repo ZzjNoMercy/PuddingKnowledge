@@ -281,7 +281,10 @@ def _load_manifest(state_dir: Path) -> dict[str, Any]:
 
 
 def _allowed_entries():
-    return {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", _LOCK, _MANIFEST, _INITIALIZING, "catalog.sqlite3", "wiki", "blobs", "resources", "wiki-evidence", "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
+    return {".workspace-authority-v1.json", ".workspace-authority-v1.json.part",
+            "active-installation.json", _LOCK, _MANIFEST, _INITIALIZING,
+            "catalog.sqlite3", "wiki", "blobs", "resources", "wiki-evidence",
+            "wiki-schema.json", _PROCESSING, *_SQLITE_AUXILIARY}
 
 
 class PersistentWorkspace:

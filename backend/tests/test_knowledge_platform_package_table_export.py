@@ -94,7 +94,7 @@ async def test_existing_asset_same_digest_exports_canonical_sheet(tmp_path: Path
         catalog_asset=("same", "space_tables", "document", "Sales", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "knowledge://spaces/space_tables/assets/same", "r", _digest(content)),
     )
     source = tmp_path / "sales.xlsx"; source.write_bytes(content)
-    destination = Path("/private/tmp") / f"table-package-existing-{tmp_path.name}.zip"
+    destination = tmp_path / "table-package-existing.zip"
     if destination.exists():
         destination.unlink()
     repository = SqliteCatalogQueryRepository(db_path)
@@ -119,7 +119,7 @@ async def test_real_table_collection_export_reads_projected_csv_and_xlsx(tmp_pat
     repository = SqliteCatalogQueryRepository(db_path)
     csv_path = tmp_path / "sales.csv"; csv_path.write_bytes(csv)
     xlsx_path = tmp_path / "sales.xlsx"; xlsx_path.write_bytes(xlsx)
-    destination = Path("/private/tmp") / f"table-package-export-{tmp_path.name}.zip"
+    destination = tmp_path / "table-package-export.zip"
     if destination.exists():
         destination.unlink()
     await PackageExportService(repository, LocalFilesystemBlobReader({"sales_csv": csv_path, "sales_xlsx": xlsx_path})).export(

@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PACKAGE = _ROOT / "artifacts/phase9-local-database-vanna-replay/package"
 _DEFAULT_OUTPUT_DIR = _ROOT / "artifacts/phase9-local-database-vanna-replay"
 _INVALID_DATABASE_URL = "postgresql://invalid.invalid/blocked"
-_SAFE_TEMP_ROOT = Path("/private/tmp")
+_SAFE_TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
 
 
 def _load_json(path: Path) -> dict[str, Any]:

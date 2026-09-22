@@ -207,6 +207,27 @@ def _publish_noreplace(
             return
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
+    if sys.platform.startswith("linux"):
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            renameat2 = libc.renameat2
+        except AttributeError as error:
+            raise OSError("atomic no-replace directory publication is unavailable in this libc") from error
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            parent_descriptor,
+            source_name.encode("utf-8"),
+            parent_descriptor,
+            destination_name.encode("utf-8"),
+            0x00000001,  # RENAME_NOREPLACE
+        )
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
     raise OSError("atomic no-replace directory publication is unsupported on this platform")
 
 

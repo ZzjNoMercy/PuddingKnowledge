@@ -78,7 +78,7 @@ def test_real_process_media_parse_read_restart(tmp_path,remote):
             ready=tmp_path/f'ready{turn}.json'
             proc=subprocess.Popen([sys.executable,'-m','knowledge_platform.local','--catalog',str(catalog),'--wiki-root',str(wiki),
                 '--state-dir',str(state),'--temp-dir',str(tmp_path/f'temp{turn}'),'--ready-file',str(ready),'--port',str(port),'--feishu-config',str(config)],
-                env=env,cwd='/private/tmp',stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                env=env,cwd=tmp_path,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
             for _ in range(150):
                 if proc.poll() is not None:
                     raise AssertionError(proc.stderr.read().decode())

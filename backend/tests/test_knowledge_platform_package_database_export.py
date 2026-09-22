@@ -55,7 +55,7 @@ async def test_database_package_exports_only_bound_selected_source(tmp_path: Pat
     repo = SqliteCatalogQueryRepository(db_path)
     snapshot = repo.read_package_snapshot()
     assert [item["id"] for item in snapshot.database_sources] == ["source_sales"]
-    destination = Path("/private/tmp") / f"database-package-{tmp_path.name}.zip"
+    destination = tmp_path / "database-package.zip"
     if destination.exists(): destination.unlink()
     await PackageExportService(repo, _NoopReader()).export(Principal("admin", ("knowledge.admin", "knowledge.space:space_sales")), Correlation("db-export"), output_zip=destination, package_id="db", version="v1", collections=[{"id": "collection_sales", "version": "v1"}])
     with zipfile.ZipFile(destination) as archive:
@@ -70,7 +70,7 @@ async def test_exported_database_package_imports_with_portable_collection_relati
     source = _source("source_sales", "space_sales", "dataset_sales")
     db_path = tmp_path / "catalog.sqlite"
     _db(db_path, [("source_sales", "space_sales", "dataset_sales", source, "sha256:" + "a" * 64)])
-    destination = Path("/private/tmp") / f"database-roundtrip-{tmp_path.name}.zip"
+    destination = tmp_path / "database-roundtrip.zip"
     if destination.exists(): destination.unlink()
     await PackageExportService(SqliteCatalogQueryRepository(db_path), _NoopReader()).export(Principal("admin", ("knowledge.admin", "knowledge.space:space_sales")), Correlation("roundtrip"), output_zip=destination, package_id="db", version="v1", collections=[{"id": "collection_sales", "version": "v1"}])
     target = tmp_path / "target.sqlite"

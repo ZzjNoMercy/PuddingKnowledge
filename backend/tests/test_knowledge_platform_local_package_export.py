@@ -60,7 +60,7 @@ def principal() -> Principal:
 
 
 def output(tmp_path: Path, name: str) -> Path:
-    path = Path("/private/tmp") / f"knowledge-export-test-{tmp_path.name}-{name}"
+    path = tmp_path / f"knowledge-export-test-{name}"
     if path.exists():
         path.unlink()
     return path
@@ -128,7 +128,7 @@ async def test_sqlite_catalog_metadata_closure_exports_original_normalized_and_i
     repo = Repo(snap); repo._database_path = database
     files = {}
     for asset_id, content in (("orig", original), ("norm", normalized), ("image", image)):
-        path = Path("/private/tmp") / f"{database.stem}-{asset_id}"
+        path = tmp_path / f"{database.stem}-{asset_id}"
         path.write_bytes(content); files[asset_id] = path
     destination = output(tmp_path, "relations.zip")
     await PackageExportService(repo, LocalFilesystemBlobReader(files)).export(principal(), Correlation("trace1"), output_zip=destination, package_id="pkg", version="1", collections=[{"id": "c", "version": "v1"}])

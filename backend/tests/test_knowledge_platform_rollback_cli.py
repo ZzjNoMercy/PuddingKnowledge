@@ -27,7 +27,7 @@ def test_cli_preserves_new_updated_deleted_rows_and_unowned_source(tmp_path):
     def run(output):
         return subprocess.run([sys.executable, '-m','knowledge_platform.distribution.rollback_cli',
             '--source-snapshot',str(paths[0]),'--target-before',str(paths[1]),'--target-after',str(paths[2]),
-            '--output',str(output),'--table','knowledge_assets'], cwd='/private/tmp', env=env,
+            '--output',str(output),'--table','knowledge_assets'], cwd=tmp_path, env=env,
             capture_output=True,text=True,timeout=20)
     output = tmp_path/'candidate.db'; result=run(output)
     assert result.returncode == 0, result.stdout+result.stderr

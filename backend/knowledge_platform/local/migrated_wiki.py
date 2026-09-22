@@ -175,7 +175,13 @@ def _load_migrated_wiki_workspace(root: Path | str, manifest: dict, *, _initiali
     if manifest.get("version") == 7: required.add("schema_evidence_digest")
     if set(manifest) != required or type(manifest.get("version")) is not int or manifest.get("version") not in (3, 5, 6, 7) or manifest.get("kind") != "migrated_wiki" or manifest.get("owner") != "puddingknowledge-local" or manifest.get("catalog") != "catalog.sqlite3" or manifest.get("evidence_root") != "wiki-evidence" or manifest.get("provider_id") != _PROVIDER or manifest.get("activation_allowed") is not False:
         raise MigratedWikiWorkspaceError("migrated Wiki workspace manifest is invalid")
-    allowed = {".workspace-authority-v1.json", ".workspace-authority-v1.json.part", ".workspace.lock", "workspace.json", ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm", "catalog.sqlite3-journal", "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal", "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal", "processing", "wiki-evidence"}
+    allowed = {".workspace-authority-v1.json", ".workspace-authority-v1.json.part",
+               "active-installation.json", ".workspace.lock", "workspace.json",
+               ".initializing", "catalog.sqlite3", "catalog.sqlite3-wal",
+               "catalog.sqlite3-shm", "catalog.sqlite3-journal",
+               "retrieval-traces.sqlite3", "retrieval-traces.sqlite3-wal",
+               "retrieval-traces.sqlite3-shm", "retrieval-traces.sqlite3-journal",
+               "processing", "wiki-evidence"}
     if manifest["version"] == 7: allowed.add("wiki-schema.json")
     if _combined: allowed.update(("blobs", "resources"))
     if any(entry.name not in allowed for entry in root.iterdir()):

@@ -130,7 +130,7 @@ def test_real_process_bitable_schema_live_query_policy_restart_and_cursor_fence(
                 "--state-dir", str(state), "--temp-dir", str(tmp_path / f"temp-{turn}"),
                 "--ready-file", str(ready), "--port", str(port), "--feishu-config", str(config),
                 "--console-origin", "http://127.0.0.1:9999",
-            ], cwd="/private/tmp", env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            ], cwd=tmp_path, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             for _ in range(200):
                 if proc.poll() is not None:
                     pytest.fail(proc.stderr.read().decode())

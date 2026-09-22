@@ -33,7 +33,7 @@ class Runtime:
         else:env['PYTHONPATH']=str(Path(__file__).parents[1])
         self.proc=subprocess.Popen([sys.executable,'-m','knowledge_platform.local','--catalog',str(self.seed),'--wiki-root',str(self.root/'wiki'),
             '--state-dir',str(self.root/'state'),'--temp-dir',str(self.root/f'temp{self.turn}'),'--ready-file',str(ready),'--port',str(self.port),'--file-config',str(self.config)],
-            cwd='/private/tmp',env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            cwd=self.root,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         for _ in range(150):
             if self.proc.poll() is not None:raise AssertionError(self.proc.stderr.read().decode())
             if ready.exists():return

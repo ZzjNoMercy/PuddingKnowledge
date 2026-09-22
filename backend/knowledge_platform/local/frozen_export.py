@@ -78,8 +78,24 @@ def export_frozen_workspace(state_dir,output,operation_id,*,_after_copy=None):
         def verify_authority():
             if authority.load_binding(state)!=binding or authority.journal(binding)!=journal:
                 raise ValueError('Workspace authority changed')
-            if len(journal['events'])!=2 or journal['events'][-1]['operation_id']!=operation_id:
+            events=journal['events']
+            if len(events) not in (2,4) or events[-1]['operation_id']!=operation_id:
                 raise ValueError('Exact suspended revision is required')
+            # A forward-migration export sees enrollment -> suspension.  A real
+            # rollback-window export sees that pair followed by the committed
+            # CUTOVER assignment and its new suspension.  Accept the latter
+            # only when it is the canonical self-writer revision; this exports
+            # the actual post-cutover workspace instead of a reconstructed
+            # two-event stand-in.
+            if len(events)==4:
+                assigned,suspended=events[2],events[3]
+                if (assigned['state']!='assigned'
+                        or assigned['writers']!={'knowledge_catalog':authority.SELF,
+                                                'connector_jobs':authority.SELF}
+                        or assigned['rollback_evidence_sha256'] is not None
+                        or suspended['state']!='suspended'
+                        or suspended['previous']!=assigned['sha256']):
+                    raise ValueError('Post-cutover suspension chain is invalid')
             if (state/PART_NAME).exists() or (state/PART_NAME).is_symlink():
                 raise ValueError('Incomplete workspace freeze')
             raw,_=_read_record(state/FREEZE_NAME,links=1)

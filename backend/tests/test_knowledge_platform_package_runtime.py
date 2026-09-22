@@ -42,7 +42,7 @@ class Runtime:
             '--ready-file', str(ready), '--port', str(self.port),
             '--file-config', str(self.root / 'files.json'), '--package-config', str(self.root / 'packages.json'),
             *getattr(self, 'extra_args', ())],
-            cwd='/private/tmp', env=env, stdout=self.log, stderr=subprocess.STDOUT)
+            cwd=self.root, env=env, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not ready.exists() and self.proc.poll() is None:
             time.sleep(.05)
@@ -126,7 +126,7 @@ asyncio.run(publisher.import_package(Principal('admin',scopes=('knowledge.admin'
         env.pop('PYTHONPATH', None); env.pop('PYTHONHOME', None)
     else: env['PYTHONPATH'] = str(Path(__file__).parents[1])
     process = subprocess.Popen([sys.executable, '-c', program, str(catalog), str(tmp_path / 'processing'), str(archive), str(marker)],
-                               cwd='/private/tmp', env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                               cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         deadline = time.monotonic() + 10
         while not marker.exists() and process.poll() is None and time.monotonic() < deadline: time.sleep(.03)

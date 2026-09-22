@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
-
-from knowledge_platform.local.writer_authority import enroll, suspend
 from knowledge_platform.local.workspace import open_persistent_workspace
+from knowledge_platform.local.writer_authority import assign, enroll, suspend, thaw
 from test_knowledge_platform_local_workspace import _catalog
 
 
@@ -49,6 +48,66 @@ def _export(state: Path, output: Path, operation_id: str = "freeze-1", **kwargs)
     from knowledge_platform.local.frozen_export import export_frozen_workspace
 
     return export_frozen_workspace(state, output, operation_id, **kwargs)
+
+
+def _prepared_manifest(path: Path) -> Path:
+    mappings = [{"domain": "knowledge_catalog", "source_id": "asset-1",
+                 "resource_uri": "knowledge://assets/asset-1"}]
+    summaries = []
+    coverage = []
+    for index, domain in enumerate(("session_harness", "knowledge_catalog", "connector_jobs")):
+        domain_mappings = [
+            {"source_id": item["source_id"], "resource_uri": item["resource_uri"]}
+            for item in mappings if item["domain"] == domain
+        ]
+        count = len(domain_mappings)
+        source_digest = "sha256:" + str(index + 3) * 64
+        summaries.append({"domain": domain, "object_count": count,
+                          "source_digest": source_digest})
+        coverage.append({
+            "domain": domain, "source_count": count, "target_count": count,
+            "mapped_count": count, "source_ids_sha256": source_digest,
+            "target_ids_sha256": "sha256:" + str(index + 6) * 64,
+            "mapping_sha256": "sha256:" + hashlib.sha256(json.dumps(
+                domain_mappings, sort_keys=True, separators=(",", ":")
+            ).encode()).hexdigest(),
+            "mapping_coverage_bps": 10000, "zero_object_attested": count == 0,
+            "source_producer_format": "puddingclaw-cutover-domain-inventory/v1",
+            "target_producer_format": (
+                "puddingharness-cutover-domain-inventory/v1"
+                if domain == "session_harness"
+                else "puddingknowledge-cutover-domain-inventory/v1"
+            ),
+            "source_inventory_receipt_sha256": "sha256:" + "a" * 64,
+            "target_inventory_receipt_sha256": "sha256:" + "b" * 64,
+            "target_artifact_sha256": "sha256:" + "c" * 64,
+            "source_producer": "puddingclaw",
+            "target_producer": "puddingharness" if domain == "session_harness" else "puddingknowledge",
+        })
+    value = {
+        "format": "agent-knowledge-platform-installation-migration/v1",
+        "source": {"installation_id": "inst-1", "schema_revision": "rev-1",
+                   "catalog_revision": "rev-1"},
+        "targets": {"puddingknowledge": "puddingknowledge-local@0.1.0"},
+        "object_summaries": summaries, "id_resource_mappings": mappings,
+        "mapping_coverage": coverage, "credential_rebinds": [],
+        "active_writers": {"session_harness": "puddingclaw",
+                           "knowledge_catalog": "puddingclaw",
+                           "connector_jobs": "puddingclaw"},
+        "checkpoint": {
+            "stage": "prepared",
+            "knowledge_readiness_receipt_digest": "sha256:" + "d" * 64,
+            "source_freeze_receipt_sha256": "sha256:" + "e" * 64,
+            "source_freeze_evidence_sha256": "sha256:" + "f" * 64,
+            "source_admission_capability_sha256": "sha256:" + "1" * 64,
+            "source_freeze_operation_id": "freeze-1", "source_home_identity": "2" * 64,
+        },
+        "rollback_strategy": "no_write_until_finalized", "state": "PREPARED",
+        "rollback_window_open": True,
+    }
+    path.write_bytes((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    path.chmod(0o600)
+    return path
 
 
 def _source_facts(state: Path) -> dict[str, bytes]:
@@ -105,6 +164,23 @@ def test_frozen_export_copies_raw_workspace_and_normalizes_wal_catalog(tmp_path)
         if manifest.exists():
             assert json.loads(manifest.read_text(encoding="utf-8")).get("activation_allowed") is False
         assert _source_facts(state) == before
+    finally:
+        writer.close()
+
+
+def test_frozen_export_accepts_actual_post_cutover_resuspension(tmp_path):
+    state, _authority, writer = _fixture(tmp_path)
+    try:
+        manifest = _prepared_manifest(tmp_path / "prepared.json")
+        assign(state, manifest, "freeze-1", "puddingknowledge")
+        thaw(state, manifest, "freeze-1")
+        journal = suspend(state, "rollback-window-1")
+        assert len(journal["events"]) == 4
+        assert journal["events"][-1]["state"] == "suspended"
+        result = _export(state, tmp_path / "export", "rollback-window-1")
+        assert result["state"] == "verified_frozen_export"
+        exported = json.loads((tmp_path / "export/manifest.json").read_bytes())
+        assert exported["plan"]["journal_sha256"]
     finally:
         writer.close()
 

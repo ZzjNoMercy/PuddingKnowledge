@@ -1,10 +1,23 @@
 import hashlib,json,os,re,subprocess,sys,threading
 from pathlib import Path
 import pytest
-from knowledge_platform.local.writer_authority import assign,thaw,enroll,suspend,load_binding,journal,lock,read,encoded,digest,main,BINDING
+from knowledge_platform.local.writer_authority import assign as _assign,thaw,enroll,suspend,load_binding,journal,lock,read,encoded,digest,main,BINDING
 from knowledge_platform.local.workspace import open_persistent_workspace,_open_lock,WorkspaceError
 from knowledge_platform.local.wiki_authoring_queue import WikiQueueWorker
 from test_knowledge_platform_local_workspace import _catalog
+
+def assign(state,manifest,operation,writer,**kwargs):
+ result=_assign(state,manifest,operation,writer,**kwargs)
+ if writer=='puddingknowledge':
+  head=result['events'][-1]
+  pointer={'format':'puddingharness-active-installation/v1','operation_id':head['operation_id'],
+   'cutover_manifest_sha256':'a'*64,'prepared_manifest_sha256':head['migration_manifest_sha256'],
+   'source_home_identity':'b'*64,'source_freeze_receipt_sha256':'sha256:'+'c'*64,
+   'active_installation_revision':head['active_installation_revision'],
+   'harness_assigned_event_sha256':'d'*64,'knowledge_assigned_event_sha256':head['sha256'],
+   'active_writers':{'session_harness':'puddingharness','knowledge_catalog':'puddingknowledge','connector_jobs':'puddingknowledge'}}
+  path=state/'active-installation.json';path.write_bytes(encoded(pointer));path.chmod(0o600)
+ return result
 
 @pytest.fixture
 def roots(tmp_path):
@@ -176,13 +189,48 @@ def test_hardlinked_catalog_rejects_enrollment_and_api_admission(roots):
 
 
 def _manifest(root,state,*,rollback_digest=None,suffix=''):
+ mappings=[{'domain':'knowledge_catalog','source_id':'asset-1','resource_uri':'knowledge://assets/asset-1'}]
+ summaries=[];coverage=[]
+ for index,domain in enumerate(('session_harness','knowledge_catalog','connector_jobs')):
+  domain_mappings=[{'source_id':item['source_id'],'resource_uri':item['resource_uri']}
+                   for item in mappings if item['domain']==domain]
+  count=len(domain_mappings);source_digest='sha256:'+str(index+3)*64
+  summaries.append({'domain':domain,'object_count':count,'source_digest':source_digest})
+  coverage.append({'domain':domain,'source_count':count,'target_count':count,'mapped_count':count,
+   'source_ids_sha256':source_digest,'target_ids_sha256':'sha256:'+str(index+6)*64,
+   'mapping_sha256':'sha256:'+hashlib.sha256(json.dumps(domain_mappings,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+   'mapping_coverage_bps':10000,'zero_object_attested':count==0,
+   'source_producer_format':'puddingclaw-cutover-domain-inventory/v1',
+   'target_producer_format':('puddingharness-cutover-domain-inventory/v1' if domain=='session_harness'
+                             else 'puddingknowledge-cutover-domain-inventory/v1'),
+   'source_inventory_receipt_sha256':'sha256:'+'a'*64,
+   'target_inventory_receipt_sha256':'sha256:'+'b'*64,
+   'target_artifact_sha256':'sha256:'+'c'*64,'source_producer':'puddingclaw',
+   'target_producer':'puddingharness' if domain=='session_harness' else 'puddingknowledge'})
  value={'format':'agent-knowledge-platform-installation-migration/v1',
   'source':{'installation_id':'inst-1'+suffix,'schema_revision':'rev-1','catalog_revision':'rev-1'},
   'targets':{'puddingknowledge':'puddingknowledge-local@0.1.0'},
-  'object_summaries':[{'domain':'knowledge_catalog','object_count':1,'source_digest':'sha256:'+'a'*64}],
-  'id_resource_mappings':[],'credential_rebinds':[],
+  'object_summaries':summaries,'id_resource_mappings':mappings,'mapping_coverage':coverage,
+  'credential_rebinds':[],
   'active_writers':{'session_harness':'puddingclaw','knowledge_catalog':'puddingclaw','connector_jobs':'puddingclaw'},
-  'checkpoint':{'stage':'prepared'},'rollback_strategy':'no_write_until_finalized','state':state,'rollback_window_open':True}
+  'checkpoint':{'stage':'prepared','knowledge_readiness_receipt_digest':'sha256:'+'d'*64,
+   'source_freeze_receipt_sha256':'sha256:'+'e'*64,'source_freeze_evidence_sha256':'sha256:'+'f'*64,
+   'source_admission_capability_sha256':'sha256:'+'1'*64,'source_freeze_operation_id':'op-1',
+  'source_home_identity':'2'*64},'rollback_strategy':'no_write_until_finalized','state':state,
+  'rollback_window_open':True}
+ if state=='DISCOVERED':
+  value['object_summaries']=[{'domain':'session_harness','object_count':0,
+                              'source_digest':'sha256:'+'3'*64}]
+  value['id_resource_mappings']=[];del value['mapping_coverage']
+ if state in {'CUTOVER','FINALIZED'}:
+  value['active_writers']={'session_harness':'puddingharness','knowledge_catalog':'puddingknowledge',
+                           'connector_jobs':'puddingknowledge'}
+  value['active_installation_revision']='sha256:'+'8'*64
+  value['checkpoint']['harness_assigned_event_sha256']='sha256:'+'6'*64
+  value['checkpoint']['knowledge_assigned_event_sha256']='sha256:'+'7'*64
+  value['completed_at']=None
+ if state=='FINALIZED':
+  value['rollback_window_open']=False;value['completed_at']='2026-09-22T00:00:00Z'
  if rollback_digest is not None:value['rollback_evidence_digest']='sha256:'+rollback_digest
  path=root/f'manifest-{state.lower()}{suffix}.json'
  path.write_bytes((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode());path.chmod(0o600)
@@ -211,6 +259,8 @@ def test_assign_and_thaw_restores_self_writes(roots):
  workspace=open_persistent_workspace(state)
  try:assert workspace.authority_fd is not None
  finally:workspace.__exit__(None,None,None)
+ (state/'active-installation.json').unlink()
+ with pytest.raises((ValueError,FileNotFoundError)):open_persistent_workspace(state)
 
 def test_assign_requires_suspended_authority(roots):
  state,authority=roots;enroll(state,authority,'op-1')
@@ -220,6 +270,19 @@ def test_assign_requires_suspended_authority(roots):
  suspend(state,'op-1')
  with pytest.raises(ValueError,match='not assigned'):thaw(state,manifest,'op-1')
  assert len(journal(load_binding(state))['events'])==2
+
+
+def test_assign_accepts_only_terminal_complete_credential_evidence(roots):
+ state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
+ manifest=_manifest(state.parent,'PREPARED');value=json.loads(manifest.read_text())
+ value['credential_rebinds']=[
+  {'slot':'missing-provider','source_ref_digest':'sha256:'+'8'*64,
+   'target_ref':'credential://knowledge/missing-provider','status':'absent'},
+  {'slot':'unused-provider','source_ref_digest':'sha256:'+'9'*64,
+   'target_ref':'credential://knowledge/unused-provider','status':'not-applicable'},
+ ]
+ manifest.write_bytes((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode())
+ assert assign(state,manifest,'op-1','puddingknowledge')['events'][-1]['state']=='assigned'
 
 def test_assign_and_thaw_bind_the_suspension_operation(roots):
  state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
@@ -371,7 +434,10 @@ def test_thaw_rejects_changed_manifest(roots):
  manifest=_manifest(state.parent,'PREPARED');assign(state,manifest,'op-1','puddingknowledge')
  with pytest.raises(ValueError,match='thaw manifest changed'):thaw(state,_manifest(state.parent,'PREPARED',suffix='-2'),'op-1')
 
-@pytest.mark.parametrize('mode',['format','missing_key','extra_key','bad_writer','bad_digest','bad_state','duplicate_domain'])
+@pytest.mark.parametrize('mode',[
+ 'format','missing_key','extra_key','bad_writer','bad_digest','bad_state','duplicate_domain',
+ 'missing_coverage','bad_mapping_domain','bad_mapping_digest','pending_credential',
+])
 def test_assign_rejects_structurally_invalid_manifest(roots,mode):
  state,authority=roots;enroll(state,authority,'op-1');suspend(state,'op-1')
  manifest=_manifest(state.parent,'PREPARED')
@@ -383,6 +449,12 @@ def test_assign_rejects_structurally_invalid_manifest(roots,mode):
  if mode=='bad_digest':value['object_summaries'][0]['source_digest']='sha256:zz'
  if mode=='bad_state':value['state']='BOGUS'
  if mode=='duplicate_domain':value['object_summaries'].append({'domain':'knowledge_catalog','object_count':0,'source_digest':'sha256:'+'b'*64})
+ if mode=='missing_coverage':del value['mapping_coverage']
+ if mode=='bad_mapping_domain':value['id_resource_mappings'][0]['domain']='connector_jobs'
+ if mode=='bad_mapping_digest':value['mapping_coverage'][1]['mapping_sha256']='sha256:'+'0'*64
+ if mode=='pending_credential':value['credential_rebinds']=[{
+  'slot':'provider','source_ref_digest':'sha256:'+'9'*64,
+  'target_ref':'credential://knowledge/provider','status':'pending'}]
  manifest.write_bytes((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode())
  with pytest.raises(ValueError,match='Installation manifest'):assign(state,manifest,'op-1','puddingknowledge')
  assert len(journal(load_binding(state))['events'])==2

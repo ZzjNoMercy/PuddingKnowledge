@@ -91,7 +91,7 @@ class Runtime:
         ready=self.root/f'ready{self.turn}.json'
         self.proc=subprocess.Popen([sys.executable,'-m','knowledge_platform.local','--catalog',str(self.seed),'--wiki-root',str(self.root/'wiki'),
             '--state-dir',str(self.root/'state'),'--temp-dir',str(self.root/f'temp{self.turn}'),'--ready-file',str(ready),
-            '--port',str(self.port),'--feishu-config',str(self.config)],env=env,cwd='/private/tmp',stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            '--port',str(self.port),'--feishu-config',str(self.config)],env=env,cwd=self.root,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         self.turn+=1
         for _ in range(200):
             if self.proc.poll() is not None:raise AssertionError(self.proc.stderr.read().decode())

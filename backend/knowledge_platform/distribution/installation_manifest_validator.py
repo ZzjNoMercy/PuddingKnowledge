@@ -14,6 +14,8 @@ command bind the states they require.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -34,9 +36,23 @@ _DIGEST_FIELDS = {
 _TEXT_FIELDS = {"staging_namespace", "active_installation_revision", "completed_at"}
 _OPTIONAL = _DIGEST_FIELDS | _TEXT_FIELDS | {
     "post_cutover_delta_count", "rollback_delta_reconciled", "failure_checkpoint",
-    "recovery_count", "started_at",
+    "recovery_count", "started_at", "mapping_coverage",
 }
 _HEX = "0123456789abcdef"
+_CUTOVER_WRITERS = {
+    "session_harness": "puddingharness",
+    "knowledge_catalog": "puddingknowledge",
+    "connector_jobs": "puddingknowledge",
+}
+_SOURCE_WRITERS = {domain: "puddingclaw" for domain in _DOMAINS}
+_COVERAGE_KEYS = {
+    "domain", "source_count", "target_count", "mapped_count",
+    "source_ids_sha256", "target_ids_sha256", "mapping_sha256",
+    "mapping_coverage_bps", "zero_object_attested",
+    "source_producer_format", "target_producer_format",
+    "source_inventory_receipt_sha256", "target_inventory_receipt_sha256",
+    "target_artifact_sha256", "source_producer", "target_producer",
+}
 
 
 def _sha(value: Any) -> bool:
@@ -67,8 +83,141 @@ def _rebind_shape(item: Any) -> bool:
         and _text(item["slot"])
         and _sha(item["source_ref_digest"])
         and _credential_uri(item["target_ref"])
-        and item["status"] in ("pending", "rebound", "failed")
+        and item["status"] in ("pending", "rebound", "absent", "not-applicable", "failed")
     )
+
+
+def _mapping_digest(items: list[dict[str, str]]) -> str:
+    raw = json.dumps(
+        items, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _complete_evidence(value: dict[str, Any]) -> None:
+    summaries = value["object_summaries"]
+    if [item["domain"] for item in summaries] != list(_DOMAINS):
+        raise ValueError("Installation manifest must summarize every writer domain in order")
+    summary_by_domain = {item["domain"]: item for item in summaries}
+
+    mappings = value["id_resource_mappings"]
+    source_ids = [item["source_id"] for item in mappings]
+    resource_uris = [item["resource_uri"] for item in mappings]
+    if len(set(source_ids)) != len(source_ids) or len(set(resource_uris)) != len(resource_uris):
+        raise ValueError("Installation manifest resource mappings are not one-to-one")
+    for item in mappings:
+        expected_scheme = "harness://" if item["domain"] == "session_harness" else "knowledge://"
+        if not item["resource_uri"].startswith(expected_scheme):
+            raise ValueError("Installation manifest resource mapping targets the wrong product")
+
+    coverage = value.get("mapping_coverage")
+    if (
+        not isinstance(coverage, list)
+        or len(coverage) != len(_DOMAINS)
+        or [item.get("domain") for item in coverage if isinstance(item, dict)] != list(_DOMAINS)
+    ):
+        raise ValueError("Installation manifest mapping coverage is incomplete")
+    for item in coverage:
+        if (
+            not isinstance(item, dict)
+            or set(item) != _COVERAGE_KEYS
+            or any(
+                type(item[key]) is not int or item[key] < 0
+                for key in ("source_count", "target_count", "mapped_count")
+            )
+            or len({item["source_count"], item["target_count"], item["mapped_count"]}) != 1
+            or item["mapping_coverage_bps"] != 10000
+            or type(item["zero_object_attested"]) is not bool
+            or item["zero_object_attested"] is not (item["source_count"] == 0)
+            or any(
+                not _sha(item[key])
+                for key in (
+                    "source_ids_sha256", "target_ids_sha256", "mapping_sha256",
+                    "source_inventory_receipt_sha256", "target_inventory_receipt_sha256",
+                    "target_artifact_sha256",
+                )
+            )
+            or not _text(item["source_producer_format"])
+            or not _text(item["target_producer_format"])
+            or item["source_producer"] != "puddingclaw"
+            or item["target_producer"] != (
+                "puddingharness" if item["domain"] == "session_harness" else "puddingknowledge"
+            )
+        ):
+            raise ValueError("Installation manifest mapping coverage is invalid")
+        domain = item["domain"]
+        summary = summary_by_domain[domain]
+        if (
+            summary["object_count"] != item["source_count"]
+            or summary["source_digest"] != item["source_ids_sha256"]
+        ):
+            raise ValueError("Installation manifest mapping coverage changed its source inventory")
+        domain_mappings = [
+            {"source_id": mapping["source_id"], "resource_uri": mapping["resource_uri"]}
+            for mapping in mappings
+            if mapping["domain"] == domain
+        ]
+        if (
+            len(domain_mappings) != item["mapped_count"]
+            or _mapping_digest(domain_mappings) != item["mapping_sha256"]
+        ):
+            raise ValueError("Installation manifest mapping coverage changed its mapping evidence")
+    if len(mappings) != sum(item["object_count"] for item in summaries):
+        raise ValueError("Installation manifest resource mappings are incomplete")
+    if any(item["status"] in {"pending", "failed"} for item in value["credential_rebinds"]):
+        raise ValueError("Installation manifest contains a non-terminal credential rebind")
+
+    checkpoint = value["checkpoint"]
+    digest_keys = {
+        "knowledge_readiness_receipt_digest", "source_freeze_receipt_sha256",
+        "source_freeze_evidence_sha256", "source_admission_capability_sha256",
+    }
+    if any(not _sha(checkpoint.get(key)) for key in digest_keys):
+        raise ValueError("Installation manifest does not bind complete readiness and source-freeze evidence")
+    if not _text(checkpoint.get("source_freeze_operation_id")):
+        raise ValueError("Installation manifest does not bind the source-freeze operation")
+    home_identity = checkpoint.get("source_home_identity")
+    if (
+        not isinstance(home_identity, str)
+        or len(home_identity) != 64
+        or any(character not in _HEX for character in home_identity)
+    ):
+        raise ValueError("Installation manifest does not bind the source Home identity")
+
+
+def _state_evidence(value: dict[str, Any]) -> None:
+    state = value["state"]
+    if state == "DISCOVERED":
+        if value.get("mapping_coverage") is not None or value["id_resource_mappings"]:
+            raise ValueError("Installation manifest carries readiness evidence before PREPARED")
+        if any(item["status"] != "pending" for item in value["credential_rebinds"]):
+            raise ValueError("Installation manifest credential state is invalid before PREPARED")
+        if value["active_writers"] != _SOURCE_WRITERS:
+            raise ValueError("Installation manifest active writers are invalid before PREPARED")
+        return
+
+    _complete_evidence(value)
+    if state in {"PREPARED", "ROLLED_BACK"}:
+        if value["active_writers"] != _SOURCE_WRITERS or value["rollback_window_open"] is not True:
+            raise ValueError("Installation manifest source authority is invalid")
+    else:
+        if value["active_writers"] != _CUTOVER_WRITERS:
+            raise ValueError("Installation manifest cutover authority is invalid")
+        if not _sha(value.get("active_installation_revision")):
+            raise ValueError("Installation manifest does not bind its active revision")
+        assigned = {
+            "harness_assigned_event_sha256", "knowledge_assigned_event_sha256",
+            "source_freeze_receipt_sha256",
+        }
+        if any(not _sha(value["checkpoint"].get(key)) for key in assigned):
+            raise ValueError("Installation manifest does not bind its assigned events")
+    if state == "FINALIZED":
+        if value["rollback_window_open"] is not False or not _text(value.get("completed_at")):
+            raise ValueError("Installation manifest finalization evidence is invalid")
+    elif state == "CUTOVER" and (
+        value["rollback_window_open"] is not True or value.get("completed_at") is not None
+    ):
+        raise ValueError("Installation manifest cutover rollback policy is invalid")
 
 
 def validate_manifest(value: Any) -> None:
@@ -107,7 +256,8 @@ def validate_manifest(value: Any) -> None:
     mappings = value["id_resource_mappings"]
     if not isinstance(mappings, list) or any(
         not isinstance(item, dict)
-        or set(item) != {"source_id", "resource_uri"}
+        or set(item) != {"domain", "source_id", "resource_uri"}
+        or item["domain"] not in _DOMAINS
         or not _text(item["source_id"])
         or not _resource_uri(item["resource_uri"])
         for item in mappings
@@ -148,6 +298,7 @@ def validate_manifest(value: Any) -> None:
             raise ValueError("Installation manifest counter is invalid")
     if "rollback_delta_reconciled" in value and type(value["rollback_delta_reconciled"]) is not bool:
         raise ValueError("Installation manifest rollback reconciliation flag is invalid")
+    _state_evidence(value)
 
 
 __all__ = ["MANIFEST_FORMAT", "validate_manifest"]
